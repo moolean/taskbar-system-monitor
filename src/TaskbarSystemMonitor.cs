@@ -12,8 +12,8 @@ using Microsoft.Win32;
 [assembly: System.Reflection.AssemblyCompany("moolean")]
 [assembly: System.Reflection.AssemblyProduct("Taskbar System Monitor")]
 [assembly: System.Reflection.AssemblyCopyright("Copyright © moolean")]
-[assembly: System.Reflection.AssemblyVersion("1.2.0.0")]
-[assembly: System.Reflection.AssemblyFileVersion("1.2.0.0")]
+[assembly: System.Reflection.AssemblyVersion("1.2.1.0")]
+[assembly: System.Reflection.AssemblyFileVersion("1.2.1.0")]
 
 namespace TaskbarSystemMonitor
 {
@@ -407,8 +407,16 @@ namespace TaskbarSystemMonitor
             backgroundMode = WidgetBackgroundMode.Transparent;
             systemUsesLightTheme = ReadSystemLightTheme();
 
-            labelFont = new Font("Segoe UI", 7.5F, FontStyle.Bold, GraphicsUnit.Point);
-            valueFont = new Font("Segoe UI", 9.5F, FontStyle.Bold, GraphicsUnit.Point);
+            labelFont = new Font(
+                "Segoe UI Semibold",
+                9.5F,
+                FontStyle.Regular,
+                GraphicsUnit.Point);
+            valueFont = new Font(
+                "Segoe UI",
+                13F,
+                FontStyle.Bold,
+                GraphicsUnit.Point);
 
             SetStyle(
                 ControlStyles.AllPaintingInWmPaint |
@@ -487,8 +495,8 @@ namespace TaskbarSystemMonitor
 
             if (horizontal)
             {
-                width = Math.Min(188, Math.Max(120, taskbarWidth / 3));
-                height = Math.Min(34, Math.Max(26, taskbarHeight - 6));
+                width = Math.Min(232, Math.Max(160, taskbarWidth / 3));
+                height = Math.Min(38, Math.Max(30, taskbarHeight - 4));
                 y = taskbarBounds.Top + Math.Max(2, (taskbarHeight - height) / 2);
 
                 int notificationLeft = FindNotificationAreaLeft(taskbar, taskbarBounds);
@@ -526,17 +534,20 @@ namespace TaskbarSystemMonitor
         protected override void OnPaint(PaintEventArgs e)
         {
             base.OnPaint(e);
-            e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
-            e.Graphics.TextRenderingHint =
-                System.Drawing.Text.TextRenderingHint.AntiAliasGridFit;
+            e.Graphics.SmoothingMode = backgroundMode == WidgetBackgroundMode.Transparent
+                ? SmoothingMode.None
+                : SmoothingMode.AntiAlias;
+            e.Graphics.TextRenderingHint = backgroundMode == WidgetBackgroundMode.Transparent
+                ? System.Drawing.Text.TextRenderingHint.SingleBitPerPixelGridFit
+                : System.Drawing.Text.TextRenderingHint.ClearTypeGridFit;
 
             using (var background = new SolidBrush(BackColor))
             {
                 e.Graphics.FillRectangle(background, ClientRectangle);
             }
 
-            int gap = 4;
-            int padding = 3;
+            int gap = 8;
+            int padding = 2;
             int itemWidth = Math.Max(1, (ClientSize.Width - gap - padding * 2) / 2);
             Rectangle cpuBounds = new Rectangle(padding, padding, itemWidth, ClientSize.Height - padding * 2);
             Rectangle memoryBounds = new Rectangle(
@@ -638,41 +649,32 @@ namespace TaskbarSystemMonitor
             Color valueColor = systemUsesLightTheme
                 ? Color.FromArgb(20, 23, 29)
                 : Color.White;
-            Color shadowColor = systemUsesLightTheme
-                ? Color.FromArgb(150, 255, 255, 255)
-                : Color.FromArgb(130, 0, 0, 0);
-
             using (var accentBrush = new SolidBrush(accent))
             using (var labelBrush = new SolidBrush(labelColor))
             using (var valueBrush = new SolidBrush(valueColor))
-            using (var shadowBrush = new SolidBrush(shadowColor))
             {
                 graphics.FillRectangle(
                     accentBrush,
                     bounds.Left,
-                    bounds.Top + Math.Max(2, bounds.Height / 4),
+                    bounds.Top + Math.Max(2, (bounds.Height - 16) / 2),
                     3,
-                    Math.Max(8, bounds.Height / 2));
+                    Math.Min(16, bounds.Height - 4));
 
                 int centerY = bounds.Top + bounds.Height / 2;
-                float labelX = bounds.Left + 7;
+                float labelX = bounds.Left + 9;
                 float labelY = centerY - labelFont.Height / 2;
-
-                if (backgroundMode == WidgetBackgroundMode.Transparent)
-                {
-                    graphics.DrawString(label, labelFont, shadowBrush, labelX + 1, labelY + 1);
-                }
                 graphics.DrawString(label, labelFont, labelBrush, labelX, labelY);
 
                 string value = string.Format("{0:0}%", percent);
+                SizeF labelSize = graphics.MeasureString(label, labelFont);
                 SizeF valueSize = graphics.MeasureString(value, valueFont);
-                float valueX = bounds.Right - valueSize.Width - 3;
+                float valueX = labelX + labelSize.Width + 6;
+                if (valueX + valueSize.Width > bounds.Right - 2)
+                {
+                    valueX = bounds.Right - valueSize.Width - 2;
+                }
                 float valueY = centerY - valueFont.Height / 2 - 1;
 
-                if (backgroundMode == WidgetBackgroundMode.Transparent)
-                {
-                    graphics.DrawString(value, valueFont, shadowBrush, valueX + 1, valueY + 1);
-                }
                 graphics.DrawString(
                     value,
                     valueFont,
