@@ -2,6 +2,7 @@ using System;
 using System.Diagnostics;
 using System.Drawing;
 using System.Drawing.Drawing2D;
+using System.Drawing.Imaging;
 using System.Runtime.InteropServices;
 using System.Threading;
 using System.Windows.Forms;
@@ -12,8 +13,8 @@ using Microsoft.Win32;
 [assembly: System.Reflection.AssemblyCompany("moolean")]
 [assembly: System.Reflection.AssemblyProduct("Taskbar System Monitor")]
 [assembly: System.Reflection.AssemblyCopyright("Copyright © moolean")]
-[assembly: System.Reflection.AssemblyVersion("1.2.2.0")]
-[assembly: System.Reflection.AssemblyFileVersion("1.2.2.0")]
+[assembly: System.Reflection.AssemblyVersion("1.3.0.0")]
+[assembly: System.Reflection.AssemblyFileVersion("1.3.0.0")]
 
 namespace TaskbarSystemMonitor
 {
@@ -381,13 +382,18 @@ namespace TaskbarSystemMonitor
     internal sealed class TaskbarWidgetForm : Form
     {
         private const int WsExToolWindow = 0x00000080;
+        private const int WsExLayered = 0x00080000;
         private const int WsExNoActivate = 0x08000000;
         private const int WmMouseActivate = 0x0021;
         private const int MaNoActivate = 3;
         private const uint SwpNoActivate = 0x0010;
         private const uint SwpShowWindow = 0x0040;
+        private const uint UlwAlpha = 0x00000002;
+        private const byte AcSrcOver = 0x00;
+        private const byte AcSrcAlpha = 0x01;
+        private const uint DibRgbColors = 0;
+        private const uint BiRgb = 0;
         private static readonly IntPtr HwndTopmost = new IntPtr(-1);
-        private static readonly Color TransparentKeyColor = Color.FromArgb(1, 2, 3);
 
         private readonly Font labelFont;
         private readonly Font valueFont;
@@ -455,7 +461,7 @@ namespace TaskbarSystemMonitor
             get
             {
                 CreateParams parameters = base.CreateParams;
-                parameters.ExStyle |= WsExToolWindow | WsExNoActivate;
+                parameters.ExStyle |= WsExToolWindow | WsExLayered | WsExNoActivate;
                 return parameters;
             }
         }
@@ -463,7 +469,10 @@ namespace TaskbarSystemMonitor
         public void UpdateSnapshot(SystemSnapshot nextSnapshot)
         {
             snapshot = nextSnapshot;
-            Invalidate();
+            if (backgroundMode == WidgetBackgroundMode.System)
+            {
+                Invalidate();
+            }
         }
 
         public void EnsureTaskbarPosition()
@@ -529,21 +538,47 @@ namespace TaskbarSystemMonitor
                 width,
                 height,
                 SwpNoActivate | SwpShowWindow);
+
+            if (backgroundMode == WidgetBackgroundMode.Transparent)
+            {
+                RenderLayeredWindow();
+            }
         }
 
         protected override void OnPaint(PaintEventArgs e)
         {
-            base.OnPaint(e);
-            e.Graphics.SmoothingMode = backgroundMode == WidgetBackgroundMode.Transparent
-                ? SmoothingMode.None
-                : SmoothingMode.AntiAlias;
-            e.Graphics.TextRenderingHint = backgroundMode == WidgetBackgroundMode.Transparent
-                ? System.Drawing.Text.TextRenderingHint.AntiAliasGridFit
-                : System.Drawing.Text.TextRenderingHint.ClearTypeGridFit;
-
-            using (var background = new SolidBrush(BackColor))
+            if (backgroundMode == WidgetBackgroundMode.Transparent)
             {
-                e.Graphics.FillRectangle(background, ClientRectangle);
+                return;
+            }
+
+            base.OnPaint(e);
+            DrawWidget(e.Graphics, true);
+        }
+
+        protected override void OnPaintBackground(PaintEventArgs e)
+        {
+            if (backgroundMode == WidgetBackgroundMode.Transparent)
+            {
+                return;
+            }
+
+            base.OnPaintBackground(e);
+        }
+
+        private void DrawWidget(Graphics graphics, bool drawBackground)
+        {
+            graphics.SmoothingMode = SmoothingMode.AntiAlias;
+            graphics.TextRenderingHint = drawBackground
+                ? System.Drawing.Text.TextRenderingHint.ClearTypeGridFit
+                : System.Drawing.Text.TextRenderingHint.AntiAliasGridFit;
+
+            if (drawBackground)
+            {
+                using (var background = new SolidBrush(BackColor))
+                {
+                    graphics.FillRectangle(background, ClientRectangle);
+                }
             }
 
             int gap = 8;
@@ -559,8 +594,8 @@ namespace TaskbarSystemMonitor
             double cpu = snapshot == null ? 0 : snapshot.CpuPercent;
             double memory = snapshot == null ? 0 : snapshot.MemoryPercent;
 
-            DrawMetric(e.Graphics, cpuBounds, "CPU", cpu, GetCpuColor(cpu));
-            DrawMetric(e.Graphics, memoryBounds, "RAM", memory, GetMemoryColor(memory));
+            DrawMetric(graphics, cpuBounds, "CPU", cpu, GetCpuColor(cpu));
+            DrawMetric(graphics, memoryBounds, "RAM", memory, GetMemoryColor(memory));
         }
 
         protected override void WndProc(ref Message message)
@@ -617,23 +652,138 @@ namespace TaskbarSystemMonitor
         private void ApplyBackgroundMode()
         {
             systemUsesLightTheme = ReadSystemLightTheme();
+            TransparencyKey = Color.Empty;
 
             if (backgroundMode == WidgetBackgroundMode.Transparent)
             {
-                BackColor = TransparentKeyColor;
-                TransparencyKey = TransparentKeyColor;
+                BackColor = Color.Black;
                 Opacity = 1.0;
             }
             else
             {
-                TransparencyKey = Color.Empty;
                 BackColor = systemUsesLightTheme
                     ? Color.FromArgb(243, 243, 243)
                     : Color.FromArgb(32, 32, 32);
                 Opacity = 0.96;
             }
 
-            Invalidate();
+            if (IsHandleCreated)
+            {
+                RecreateHandle();
+                if (Visible)
+                {
+                    EnsureTaskbarPosition();
+                }
+            }
+            else
+            {
+                Invalidate();
+            }
+        }
+
+        private void RenderLayeredWindow()
+        {
+            if (!IsHandleCreated || ClientSize.Width <= 0 || ClientSize.Height <= 0)
+            {
+                return;
+            }
+
+            IntPtr screenDc = GetDC(IntPtr.Zero);
+            if (screenDc == IntPtr.Zero)
+            {
+                return;
+            }
+
+            IntPtr memoryDc = IntPtr.Zero;
+            IntPtr bitmapHandle = IntPtr.Zero;
+            IntPtr previousObject = IntPtr.Zero;
+
+            try
+            {
+                memoryDc = CreateCompatibleDC(screenDc);
+                if (memoryDc == IntPtr.Zero)
+                {
+                    return;
+                }
+
+                var bitmapInfo = new BITMAPINFO();
+                bitmapInfo.Header.Size = (uint)Marshal.SizeOf(typeof(BITMAPINFOHEADER));
+                bitmapInfo.Header.Width = ClientSize.Width;
+                bitmapInfo.Header.Height = -ClientSize.Height;
+                bitmapInfo.Header.Planes = 1;
+                bitmapInfo.Header.BitCount = 32;
+                bitmapInfo.Header.Compression = BiRgb;
+
+                IntPtr pixelData;
+                bitmapHandle = CreateDIBSection(
+                    screenDc,
+                    ref bitmapInfo,
+                    DibRgbColors,
+                    out pixelData,
+                    IntPtr.Zero,
+                    0);
+
+                if (bitmapHandle == IntPtr.Zero || pixelData == IntPtr.Zero)
+                {
+                    return;
+                }
+
+                using (var bitmap = new Bitmap(
+                    ClientSize.Width,
+                    ClientSize.Height,
+                    ClientSize.Width * 4,
+                    PixelFormat.Format32bppPArgb,
+                    pixelData))
+                using (Graphics graphics = Graphics.FromImage(bitmap))
+                {
+                    graphics.Clear(Color.Transparent);
+                    graphics.CompositingMode = CompositingMode.SourceOver;
+                    graphics.CompositingQuality = CompositingQuality.HighQuality;
+                    DrawWidget(graphics, false);
+                    graphics.Flush();
+                }
+
+                previousObject = SelectObject(memoryDc, bitmapHandle);
+
+                var destination = new POINT(Left, Top);
+                var source = new POINT(0, 0);
+                var size = new SIZE(ClientSize.Width, ClientSize.Height);
+                var blend = new BLENDFUNCTION();
+                blend.BlendOp = AcSrcOver;
+                blend.BlendFlags = 0;
+                blend.SourceConstantAlpha = 255;
+                blend.AlphaFormat = AcSrcAlpha;
+
+                UpdateLayeredWindow(
+                    Handle,
+                    screenDc,
+                    ref destination,
+                    ref size,
+                    memoryDc,
+                    ref source,
+                    0,
+                    ref blend,
+                    UlwAlpha);
+            }
+            finally
+            {
+                if (previousObject != IntPtr.Zero && memoryDc != IntPtr.Zero)
+                {
+                    SelectObject(memoryDc, previousObject);
+                }
+
+                if (bitmapHandle != IntPtr.Zero)
+                {
+                    DeleteObject(bitmapHandle);
+                }
+
+                if (memoryDc != IntPtr.Zero)
+                {
+                    DeleteDC(memoryDc);
+                }
+
+                ReleaseDC(IntPtr.Zero, screenDc);
+            }
         }
 
         private void DrawMetric(
@@ -775,6 +925,64 @@ namespace TaskbarSystemMonitor
             public int Bottom;
         }
 
+        [StructLayout(LayoutKind.Sequential)]
+        private struct POINT
+        {
+            public POINT(int x, int y)
+            {
+                X = x;
+                Y = y;
+            }
+
+            public int X;
+            public int Y;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct SIZE
+        {
+            public SIZE(int width, int height)
+            {
+                Width = width;
+                Height = height;
+            }
+
+            public int Width;
+            public int Height;
+        }
+
+        [StructLayout(LayoutKind.Sequential, Pack = 1)]
+        private struct BLENDFUNCTION
+        {
+            public byte BlendOp;
+            public byte BlendFlags;
+            public byte SourceConstantAlpha;
+            public byte AlphaFormat;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct BITMAPINFOHEADER
+        {
+            public uint Size;
+            public int Width;
+            public int Height;
+            public ushort Planes;
+            public ushort BitCount;
+            public uint Compression;
+            public uint SizeImage;
+            public int XPelsPerMeter;
+            public int YPelsPerMeter;
+            public uint ColorsUsed;
+            public uint ColorsImportant;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct BITMAPINFO
+        {
+            public BITMAPINFOHEADER Header;
+            public uint Colors;
+        }
+
         [DllImport("user32.dll", CharSet = CharSet.Auto)]
         private static extern IntPtr FindWindow(string className, string windowName);
 
@@ -797,6 +1005,45 @@ namespace TaskbarSystemMonitor
             int width,
             int height,
             uint flags);
+
+        [DllImport("user32.dll")]
+        private static extern IntPtr GetDC(IntPtr windowHandle);
+
+        [DllImport("user32.dll")]
+        private static extern int ReleaseDC(IntPtr windowHandle, IntPtr deviceContext);
+
+        [DllImport("user32.dll", SetLastError = true)]
+        private static extern bool UpdateLayeredWindow(
+            IntPtr windowHandle,
+            IntPtr destinationDc,
+            ref POINT destinationPoint,
+            ref SIZE size,
+            IntPtr sourceDc,
+            ref POINT sourcePoint,
+            int colorKey,
+            ref BLENDFUNCTION blend,
+            uint flags);
+
+        [DllImport("gdi32.dll")]
+        private static extern IntPtr CreateCompatibleDC(IntPtr deviceContext);
+
+        [DllImport("gdi32.dll")]
+        private static extern bool DeleteDC(IntPtr deviceContext);
+
+        [DllImport("gdi32.dll")]
+        private static extern IntPtr SelectObject(IntPtr deviceContext, IntPtr graphicsObject);
+
+        [DllImport("gdi32.dll")]
+        private static extern bool DeleteObject(IntPtr graphicsObject);
+
+        [DllImport("gdi32.dll")]
+        private static extern IntPtr CreateDIBSection(
+            IntPtr deviceContext,
+            ref BITMAPINFO bitmapInfo,
+            uint usage,
+            out IntPtr pixelData,
+            IntPtr section,
+            uint offset);
     }
 
     internal static class WidgetPreferences
