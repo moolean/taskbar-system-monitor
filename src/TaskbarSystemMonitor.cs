@@ -12,8 +12,8 @@ using Microsoft.Win32;
 [assembly: System.Reflection.AssemblyCompany("moolean")]
 [assembly: System.Reflection.AssemblyProduct("Taskbar System Monitor")]
 [assembly: System.Reflection.AssemblyCopyright("Copyright © moolean")]
-[assembly: System.Reflection.AssemblyVersion("1.1.0.0")]
-[assembly: System.Reflection.AssemblyFileVersion("1.1.0.0")]
+[assembly: System.Reflection.AssemblyVersion("1.2.0.0")]
+[assembly: System.Reflection.AssemblyFileVersion("1.2.0.0")]
 
 namespace TaskbarSystemMonitor
 {
@@ -109,6 +109,8 @@ namespace TaskbarSystemMonitor
         private readonly ToolStripMenuItem memoryItem;
         private readonly ToolStripMenuItem startupItem;
         private readonly ToolStripMenuItem widgetItem;
+        private readonly ToolStripMenuItem transparentBackgroundItem;
+        private readonly ToolStripMenuItem systemBackgroundItem;
         private readonly StartupManager startupManager;
         private readonly TaskbarWidgetForm taskbarWidget;
         private MonitorForm monitorForm;
@@ -136,6 +138,22 @@ namespace TaskbarSystemMonitor
             widgetItem.Checked = true;
             widgetItem.Click += ToggleTaskbarWidget;
 
+            transparentBackgroundItem = new ToolStripMenuItem("透明背景");
+            transparentBackgroundItem.Click += delegate
+            {
+                SetWidgetBackgroundMode(WidgetBackgroundMode.Transparent);
+            };
+
+            systemBackgroundItem = new ToolStripMenuItem("跟随系统深浅色");
+            systemBackgroundItem.Click += delegate
+            {
+                SetWidgetBackgroundMode(WidgetBackgroundMode.System);
+            };
+
+            var backgroundMenuItem = new ToolStripMenuItem("任务栏背景");
+            backgroundMenuItem.DropDownItems.Add(transparentBackgroundItem);
+            backgroundMenuItem.DropDownItems.Add(systemBackgroundItem);
+
             var openItem = new ToolStripMenuItem("打开监控面板");
             openItem.Font = new Font(openItem.Font, FontStyle.Bold);
             openItem.Click += delegate { ShowMonitorWindow(); };
@@ -154,6 +172,7 @@ namespace TaskbarSystemMonitor
             menu.Items.Add(new ToolStripSeparator());
             menu.Items.Add(taskManagerItem);
             menu.Items.Add(widgetItem);
+            menu.Items.Add(backgroundMenuItem);
             menu.Items.Add(startupItem);
             menu.Items.Add(new ToolStripSeparator());
             menu.Items.Add(exitItem);
@@ -167,6 +186,7 @@ namespace TaskbarSystemMonitor
             taskbarWidget = new TaskbarWidgetForm();
             taskbarWidget.ContextMenuStrip = menu;
             taskbarWidget.DetailsRequested += delegate { ShowMonitorWindow(); };
+            SetWidgetBackgroundMode(WidgetPreferences.LoadBackgroundMode(), false);
             taskbarWidget.Show();
 
             timer = new System.Windows.Forms.Timer();
@@ -268,6 +288,23 @@ namespace TaskbarSystemMonitor
             }
         }
 
+        private void SetWidgetBackgroundMode(WidgetBackgroundMode mode)
+        {
+            SetWidgetBackgroundMode(mode, true);
+        }
+
+        private void SetWidgetBackgroundMode(WidgetBackgroundMode mode, bool save)
+        {
+            taskbarWidget.BackgroundMode = mode;
+            transparentBackgroundItem.Checked = mode == WidgetBackgroundMode.Transparent;
+            systemBackgroundItem.Checked = mode == WidgetBackgroundMode.System;
+
+            if (save)
+            {
+                WidgetPreferences.SaveBackgroundMode(mode);
+            }
+        }
+
         private void ShowMonitorWindow()
         {
             if (monitorForm == null || monitorForm.IsDisposed)
@@ -335,6 +372,12 @@ namespace TaskbarSystemMonitor
         }
     }
 
+    internal enum WidgetBackgroundMode
+    {
+        Transparent,
+        System
+    }
+
     internal sealed class TaskbarWidgetForm : Form
     {
         private const int WsExToolWindow = 0x00000080;
@@ -344,10 +387,13 @@ namespace TaskbarSystemMonitor
         private const uint SwpNoActivate = 0x0010;
         private const uint SwpShowWindow = 0x0040;
         private static readonly IntPtr HwndTopmost = new IntPtr(-1);
+        private static readonly Color TransparentKeyColor = Color.FromArgb(1, 2, 3);
 
         private readonly Font labelFont;
         private readonly Font valueFont;
         private SystemSnapshot snapshot;
+        private WidgetBackgroundMode backgroundMode;
+        private bool systemUsesLightTheme;
 
         public TaskbarWidgetForm()
         {
@@ -355,11 +401,11 @@ namespace TaskbarSystemMonitor
             FormBorderStyle = FormBorderStyle.None;
             ShowInTaskbar = false;
             StartPosition = FormStartPosition.Manual;
-            BackColor = Color.FromArgb(24, 28, 36);
             ForeColor = Color.White;
-            Opacity = 0.97;
             TopMost = true;
             DoubleBuffered = true;
+            backgroundMode = WidgetBackgroundMode.Transparent;
+            systemUsesLightTheme = ReadSystemLightTheme();
 
             labelFont = new Font("Segoe UI", 7.5F, FontStyle.Bold, GraphicsUnit.Point);
             valueFont = new Font("Segoe UI", 9.5F, FontStyle.Bold, GraphicsUnit.Point);
@@ -372,9 +418,24 @@ namespace TaskbarSystemMonitor
                 true);
 
             MouseClick += HandleMouseClick;
+            SystemEvents.UserPreferenceChanged += HandleUserPreferenceChanged;
+            ApplyBackgroundMode();
         }
 
         public event EventHandler DetailsRequested;
+
+        public WidgetBackgroundMode BackgroundMode
+        {
+            get { return backgroundMode; }
+            set
+            {
+                if (backgroundMode != value)
+                {
+                    backgroundMode = value;
+                    ApplyBackgroundMode();
+                }
+            }
+        }
 
         protected override bool ShowWithoutActivation
         {
@@ -466,9 +527,10 @@ namespace TaskbarSystemMonitor
         {
             base.OnPaint(e);
             e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
-            e.Graphics.TextRenderingHint = System.Drawing.Text.TextRenderingHint.ClearTypeGridFit;
+            e.Graphics.TextRenderingHint =
+                System.Drawing.Text.TextRenderingHint.AntiAliasGridFit;
 
-            using (var background = new SolidBrush(Color.FromArgb(24, 28, 36)))
+            using (var background = new SolidBrush(BackColor))
             {
                 e.Graphics.FillRectangle(background, ClientRectangle);
             }
@@ -505,6 +567,7 @@ namespace TaskbarSystemMonitor
         {
             if (disposing)
             {
+                SystemEvents.UserPreferenceChanged -= HandleUserPreferenceChanged;
                 labelFont.Dispose();
                 valueFont.Dispose();
             }
@@ -524,6 +587,44 @@ namespace TaskbarSystemMonitor
             }
         }
 
+        private void HandleUserPreferenceChanged(object sender, UserPreferenceChangedEventArgs e)
+        {
+            if (IsDisposed || !IsHandleCreated)
+            {
+                return;
+            }
+
+            if (InvokeRequired)
+            {
+                BeginInvoke(new MethodInvoker(ApplyBackgroundMode));
+                return;
+            }
+
+            ApplyBackgroundMode();
+        }
+
+        private void ApplyBackgroundMode()
+        {
+            systemUsesLightTheme = ReadSystemLightTheme();
+
+            if (backgroundMode == WidgetBackgroundMode.Transparent)
+            {
+                BackColor = TransparentKeyColor;
+                TransparencyKey = TransparentKeyColor;
+                Opacity = 1.0;
+            }
+            else
+            {
+                TransparencyKey = Color.Empty;
+                BackColor = systemUsesLightTheme
+                    ? Color.FromArgb(243, 243, 243)
+                    : Color.FromArgb(32, 32, 32);
+                Opacity = 0.96;
+            }
+
+            Invalidate();
+        }
+
         private void DrawMetric(
             Graphics graphics,
             Rectangle bounds,
@@ -531,31 +632,86 @@ namespace TaskbarSystemMonitor
             double percent,
             Color accent)
         {
-            using (var panelBrush = new SolidBrush(Color.FromArgb(38, 44, 55)))
+            Color labelColor = systemUsesLightTheme
+                ? Color.FromArgb(73, 78, 88)
+                : Color.FromArgb(205, 211, 222);
+            Color valueColor = systemUsesLightTheme
+                ? Color.FromArgb(20, 23, 29)
+                : Color.White;
+            Color shadowColor = systemUsesLightTheme
+                ? Color.FromArgb(150, 255, 255, 255)
+                : Color.FromArgb(130, 0, 0, 0);
+
             using (var accentBrush = new SolidBrush(accent))
-            using (var labelBrush = new SolidBrush(Color.FromArgb(166, 177, 194)))
-            using (var valueBrush = new SolidBrush(Color.White))
+            using (var labelBrush = new SolidBrush(labelColor))
+            using (var valueBrush = new SolidBrush(valueColor))
+            using (var shadowBrush = new SolidBrush(shadowColor))
             {
-                graphics.FillRectangle(panelBrush, bounds);
-                graphics.FillRectangle(accentBrush, bounds.Left, bounds.Top, 3, bounds.Height);
+                graphics.FillRectangle(
+                    accentBrush,
+                    bounds.Left,
+                    bounds.Top + Math.Max(2, bounds.Height / 4),
+                    3,
+                    Math.Max(8, bounds.Height / 2));
 
                 int centerY = bounds.Top + bounds.Height / 2;
-                graphics.DrawString(
-                    label,
-                    labelFont,
-                    labelBrush,
-                    bounds.Left + 7,
-                    centerY - labelFont.Height / 2);
+                float labelX = bounds.Left + 7;
+                float labelY = centerY - labelFont.Height / 2;
+
+                if (backgroundMode == WidgetBackgroundMode.Transparent)
+                {
+                    graphics.DrawString(label, labelFont, shadowBrush, labelX + 1, labelY + 1);
+                }
+                graphics.DrawString(label, labelFont, labelBrush, labelX, labelY);
 
                 string value = string.Format("{0:0}%", percent);
                 SizeF valueSize = graphics.MeasureString(value, valueFont);
+                float valueX = bounds.Right - valueSize.Width - 3;
+                float valueY = centerY - valueFont.Height / 2 - 1;
+
+                if (backgroundMode == WidgetBackgroundMode.Transparent)
+                {
+                    graphics.DrawString(value, valueFont, shadowBrush, valueX + 1, valueY + 1);
+                }
                 graphics.DrawString(
                     value,
                     valueFont,
                     valueBrush,
-                    bounds.Right - valueSize.Width - 5,
-                    centerY - valueFont.Height / 2 - 1);
+                    valueX,
+                    valueY);
             }
+        }
+
+        private static bool ReadSystemLightTheme()
+        {
+            const string themePath =
+                @"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize";
+
+            try
+            {
+                using (RegistryKey key = Registry.CurrentUser.OpenSubKey(themePath, false))
+                {
+                    if (key != null)
+                    {
+                        object value = key.GetValue("SystemUsesLightTheme");
+                        if (value == null)
+                        {
+                            value = key.GetValue("AppsUseLightTheme");
+                        }
+
+                        if (value != null)
+                        {
+                            return Convert.ToInt32(value) != 0;
+                        }
+                    }
+                }
+            }
+            catch
+            {
+                // Fall through to the current system color brightness.
+            }
+
+            return SystemColors.Window.GetBrightness() >= 0.5F;
         }
 
         private static Color GetCpuColor(double percent)
@@ -639,6 +795,60 @@ namespace TaskbarSystemMonitor
             int width,
             int height,
             uint flags);
+    }
+
+    internal static class WidgetPreferences
+    {
+        private const string RegistryPath = @"Software\moolean\TaskbarSystemMonitor";
+        private const string BackgroundModeValue = "BackgroundMode";
+
+        public static WidgetBackgroundMode LoadBackgroundMode()
+        {
+            try
+            {
+                using (RegistryKey key = Registry.CurrentUser.OpenSubKey(RegistryPath, false))
+                {
+                    if (key == null)
+                    {
+                        return WidgetBackgroundMode.Transparent;
+                    }
+
+                    string value = key.GetValue(BackgroundModeValue) as string;
+                    WidgetBackgroundMode mode;
+                    if (Enum.TryParse(value, true, out mode))
+                    {
+                        return mode;
+                    }
+                }
+            }
+            catch
+            {
+                // Use the transparent default when preferences cannot be read.
+            }
+
+            return WidgetBackgroundMode.Transparent;
+        }
+
+        public static void SaveBackgroundMode(WidgetBackgroundMode mode)
+        {
+            try
+            {
+                using (RegistryKey key = Registry.CurrentUser.CreateSubKey(RegistryPath))
+                {
+                    if (key != null)
+                    {
+                        key.SetValue(
+                            BackgroundModeValue,
+                            mode.ToString(),
+                            RegistryValueKind.String);
+                    }
+                }
+            }
+            catch
+            {
+                // Visual preferences are best-effort and must not stop monitoring.
+            }
+        }
     }
 
     internal sealed class MonitorForm : Form
