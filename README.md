@@ -2,6 +2,8 @@
 
 一个轻量、无第三方依赖的 Windows CPU 与内存任务栏监控小程序。
 
+![Taskbar System Monitor 任务栏显示效果](docs/taskbar-preview.png)
+
 ## 功能
 
 - 在任务栏右侧直接常驻显示 `CPU 12%` 和 `RAM 48%`，无需点开
