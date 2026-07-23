@@ -12,8 +12,8 @@ using Microsoft.Win32;
 [assembly: System.Reflection.AssemblyCompany("moolean")]
 [assembly: System.Reflection.AssemblyProduct("Taskbar System Monitor")]
 [assembly: System.Reflection.AssemblyCopyright("Copyright © moolean")]
-[assembly: System.Reflection.AssemblyVersion("1.0.0.0")]
-[assembly: System.Reflection.AssemblyFileVersion("1.0.0.0")]
+[assembly: System.Reflection.AssemblyVersion("1.1.0.0")]
+[assembly: System.Reflection.AssemblyFileVersion("1.1.0.0")]
 
 namespace TaskbarSystemMonitor
 {
@@ -108,7 +108,9 @@ namespace TaskbarSystemMonitor
         private readonly ToolStripMenuItem cpuItem;
         private readonly ToolStripMenuItem memoryItem;
         private readonly ToolStripMenuItem startupItem;
+        private readonly ToolStripMenuItem widgetItem;
         private readonly StartupManager startupManager;
+        private readonly TaskbarWidgetForm taskbarWidget;
         private MonitorForm monitorForm;
         private Icon currentIcon;
         private SystemSnapshot latestSnapshot;
@@ -129,6 +131,11 @@ namespace TaskbarSystemMonitor
             startupItem.Checked = startupManager.IsEnabled();
             startupItem.Click += ToggleStartup;
 
+            widgetItem = new ToolStripMenuItem("在任务栏直接显示数值");
+            widgetItem.CheckOnClick = true;
+            widgetItem.Checked = true;
+            widgetItem.Click += ToggleTaskbarWidget;
+
             var openItem = new ToolStripMenuItem("打开监控面板");
             openItem.Font = new Font(openItem.Font, FontStyle.Bold);
             openItem.Click += delegate { ShowMonitorWindow(); };
@@ -146,6 +153,7 @@ namespace TaskbarSystemMonitor
             menu.Items.Add(memoryItem);
             menu.Items.Add(new ToolStripSeparator());
             menu.Items.Add(taskManagerItem);
+            menu.Items.Add(widgetItem);
             menu.Items.Add(startupItem);
             menu.Items.Add(new ToolStripSeparator());
             menu.Items.Add(exitItem);
@@ -155,6 +163,11 @@ namespace TaskbarSystemMonitor
             trayIcon.Text = "CPU / RAM 监控";
             trayIcon.Visible = true;
             trayIcon.DoubleClick += delegate { ShowMonitorWindow(); };
+
+            taskbarWidget = new TaskbarWidgetForm();
+            taskbarWidget.ContextMenuStrip = menu;
+            taskbarWidget.DetailsRequested += delegate { ShowMonitorWindow(); };
+            taskbarWidget.Show();
 
             timer = new System.Windows.Forms.Timer();
             timer.Interval = 1000;
@@ -214,6 +227,12 @@ namespace TaskbarSystemMonitor
             {
                 monitorForm.UpdateSnapshot(latestSnapshot);
             }
+
+            if (widgetItem.Checked)
+            {
+                taskbarWidget.UpdateSnapshot(latestSnapshot);
+                taskbarWidget.EnsureTaskbarPosition();
+            }
         }
 
         private static string TruncateTooltip(string value)
@@ -232,6 +251,20 @@ namespace TaskbarSystemMonitor
                     "Taskbar System Monitor",
                     MessageBoxButtons.OK,
                     MessageBoxIcon.Warning);
+            }
+        }
+
+        private void ToggleTaskbarWidget(object sender, EventArgs e)
+        {
+            if (widgetItem.Checked)
+            {
+                taskbarWidget.Show();
+                taskbarWidget.UpdateSnapshot(latestSnapshot);
+                taskbarWidget.EnsureTaskbarPosition();
+            }
+            else
+            {
+                taskbarWidget.Hide();
             }
         }
 
@@ -281,6 +314,7 @@ namespace TaskbarSystemMonitor
                 monitorForm.Close();
             }
 
+            taskbarWidget.Close();
             trayIcon.Dispose();
             if (currentIcon != null)
             {
@@ -299,6 +333,312 @@ namespace TaskbarSystemMonitor
 
             base.Dispose(disposing);
         }
+    }
+
+    internal sealed class TaskbarWidgetForm : Form
+    {
+        private const int WsExToolWindow = 0x00000080;
+        private const int WsExNoActivate = 0x08000000;
+        private const int WmMouseActivate = 0x0021;
+        private const int MaNoActivate = 3;
+        private const uint SwpNoActivate = 0x0010;
+        private const uint SwpShowWindow = 0x0040;
+        private static readonly IntPtr HwndTopmost = new IntPtr(-1);
+
+        private readonly Font labelFont;
+        private readonly Font valueFont;
+        private SystemSnapshot snapshot;
+
+        public TaskbarWidgetForm()
+        {
+            Text = "Taskbar System Monitor";
+            FormBorderStyle = FormBorderStyle.None;
+            ShowInTaskbar = false;
+            StartPosition = FormStartPosition.Manual;
+            BackColor = Color.FromArgb(24, 28, 36);
+            ForeColor = Color.White;
+            Opacity = 0.97;
+            TopMost = true;
+            DoubleBuffered = true;
+
+            labelFont = new Font("Segoe UI", 7.5F, FontStyle.Bold, GraphicsUnit.Point);
+            valueFont = new Font("Segoe UI", 9.5F, FontStyle.Bold, GraphicsUnit.Point);
+
+            SetStyle(
+                ControlStyles.AllPaintingInWmPaint |
+                ControlStyles.OptimizedDoubleBuffer |
+                ControlStyles.ResizeRedraw |
+                ControlStyles.UserPaint,
+                true);
+
+            MouseClick += HandleMouseClick;
+        }
+
+        public event EventHandler DetailsRequested;
+
+        protected override bool ShowWithoutActivation
+        {
+            get { return true; }
+        }
+
+        protected override CreateParams CreateParams
+        {
+            get
+            {
+                CreateParams parameters = base.CreateParams;
+                parameters.ExStyle |= WsExToolWindow | WsExNoActivate;
+                return parameters;
+            }
+        }
+
+        public void UpdateSnapshot(SystemSnapshot nextSnapshot)
+        {
+            snapshot = nextSnapshot;
+            Invalidate();
+        }
+
+        public void EnsureTaskbarPosition()
+        {
+            IntPtr taskbar = FindWindow("Shell_TrayWnd", null);
+            if (taskbar == IntPtr.Zero)
+            {
+                return;
+            }
+
+            RECT taskbarBounds;
+            if (!GetWindowRect(taskbar, out taskbarBounds))
+            {
+                return;
+            }
+
+            int taskbarWidth = taskbarBounds.Right - taskbarBounds.Left;
+            int taskbarHeight = taskbarBounds.Bottom - taskbarBounds.Top;
+            if (taskbarWidth <= 4 || taskbarHeight <= 4)
+            {
+                return;
+            }
+
+            bool horizontal = taskbarWidth >= taskbarHeight;
+            int x;
+            int y;
+            int width;
+            int height;
+
+            if (horizontal)
+            {
+                width = Math.Min(188, Math.Max(120, taskbarWidth / 3));
+                height = Math.Min(34, Math.Max(26, taskbarHeight - 6));
+                y = taskbarBounds.Top + Math.Max(2, (taskbarHeight - height) / 2);
+
+                int notificationLeft = FindNotificationAreaLeft(taskbar, taskbarBounds);
+                x = notificationLeft - width - 8;
+                x = Math.Max(taskbarBounds.Left + 4, x);
+                x = Math.Min(x, taskbarBounds.Right - width - 4);
+            }
+            else
+            {
+                width = Math.Max(34, taskbarWidth - 6);
+                height = 70;
+                x = taskbarBounds.Left + Math.Max(2, (taskbarWidth - width) / 2);
+
+                int notificationTop = FindNotificationAreaTop(taskbar, taskbarBounds);
+                y = notificationTop - height - 8;
+                y = Math.Max(taskbarBounds.Top + 4, y);
+                y = Math.Min(y, taskbarBounds.Bottom - height - 4);
+            }
+
+            if (Bounds.X != x || Bounds.Y != y || Bounds.Width != width || Bounds.Height != height)
+            {
+                Bounds = new Rectangle(x, y, width, height);
+            }
+
+            SetWindowPos(
+                Handle,
+                HwndTopmost,
+                x,
+                y,
+                width,
+                height,
+                SwpNoActivate | SwpShowWindow);
+        }
+
+        protected override void OnPaint(PaintEventArgs e)
+        {
+            base.OnPaint(e);
+            e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
+            e.Graphics.TextRenderingHint = System.Drawing.Text.TextRenderingHint.ClearTypeGridFit;
+
+            using (var background = new SolidBrush(Color.FromArgb(24, 28, 36)))
+            {
+                e.Graphics.FillRectangle(background, ClientRectangle);
+            }
+
+            int gap = 4;
+            int padding = 3;
+            int itemWidth = Math.Max(1, (ClientSize.Width - gap - padding * 2) / 2);
+            Rectangle cpuBounds = new Rectangle(padding, padding, itemWidth, ClientSize.Height - padding * 2);
+            Rectangle memoryBounds = new Rectangle(
+                padding + itemWidth + gap,
+                padding,
+                itemWidth,
+                ClientSize.Height - padding * 2);
+
+            double cpu = snapshot == null ? 0 : snapshot.CpuPercent;
+            double memory = snapshot == null ? 0 : snapshot.MemoryPercent;
+
+            DrawMetric(e.Graphics, cpuBounds, "CPU", cpu, GetCpuColor(cpu));
+            DrawMetric(e.Graphics, memoryBounds, "RAM", memory, GetMemoryColor(memory));
+        }
+
+        protected override void WndProc(ref Message message)
+        {
+            if (message.Msg == WmMouseActivate)
+            {
+                message.Result = new IntPtr(MaNoActivate);
+                return;
+            }
+
+            base.WndProc(ref message);
+        }
+
+        protected override void Dispose(bool disposing)
+        {
+            if (disposing)
+            {
+                labelFont.Dispose();
+                valueFont.Dispose();
+            }
+
+            base.Dispose(disposing);
+        }
+
+        private void HandleMouseClick(object sender, MouseEventArgs e)
+        {
+            if (e.Button == MouseButtons.Left)
+            {
+                EventHandler handler = DetailsRequested;
+                if (handler != null)
+                {
+                    handler(this, EventArgs.Empty);
+                }
+            }
+        }
+
+        private void DrawMetric(
+            Graphics graphics,
+            Rectangle bounds,
+            string label,
+            double percent,
+            Color accent)
+        {
+            using (var panelBrush = new SolidBrush(Color.FromArgb(38, 44, 55)))
+            using (var accentBrush = new SolidBrush(accent))
+            using (var labelBrush = new SolidBrush(Color.FromArgb(166, 177, 194)))
+            using (var valueBrush = new SolidBrush(Color.White))
+            {
+                graphics.FillRectangle(panelBrush, bounds);
+                graphics.FillRectangle(accentBrush, bounds.Left, bounds.Top, 3, bounds.Height);
+
+                int centerY = bounds.Top + bounds.Height / 2;
+                graphics.DrawString(
+                    label,
+                    labelFont,
+                    labelBrush,
+                    bounds.Left + 7,
+                    centerY - labelFont.Height / 2);
+
+                string value = string.Format("{0:0}%", percent);
+                SizeF valueSize = graphics.MeasureString(value, valueFont);
+                graphics.DrawString(
+                    value,
+                    valueFont,
+                    valueBrush,
+                    bounds.Right - valueSize.Width - 5,
+                    centerY - valueFont.Height / 2 - 1);
+            }
+        }
+
+        private static Color GetCpuColor(double percent)
+        {
+            if (percent >= 85)
+            {
+                return Color.FromArgb(255, 92, 92);
+            }
+            if (percent >= 65)
+            {
+                return Color.FromArgb(255, 184, 77);
+            }
+            return Color.FromArgb(44, 207, 255);
+        }
+
+        private static Color GetMemoryColor(double percent)
+        {
+            if (percent >= 85)
+            {
+                return Color.FromArgb(255, 92, 92);
+            }
+            if (percent >= 70)
+            {
+                return Color.FromArgb(255, 184, 77);
+            }
+            return Color.FromArgb(190, 94, 255);
+        }
+
+        private static int FindNotificationAreaLeft(IntPtr taskbar, RECT fallback)
+        {
+            IntPtr notificationArea = FindWindowEx(taskbar, IntPtr.Zero, "TrayNotifyWnd", null);
+            RECT bounds;
+            if (notificationArea != IntPtr.Zero && GetWindowRect(notificationArea, out bounds))
+            {
+                return bounds.Left;
+            }
+
+            return fallback.Right - Math.Min(240, Math.Max(120, (fallback.Right - fallback.Left) / 6));
+        }
+
+        private static int FindNotificationAreaTop(IntPtr taskbar, RECT fallback)
+        {
+            IntPtr notificationArea = FindWindowEx(taskbar, IntPtr.Zero, "TrayNotifyWnd", null);
+            RECT bounds;
+            if (notificationArea != IntPtr.Zero && GetWindowRect(notificationArea, out bounds))
+            {
+                return bounds.Top;
+            }
+
+            return fallback.Bottom - Math.Min(160, Math.Max(90, (fallback.Bottom - fallback.Top) / 4));
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct RECT
+        {
+            public int Left;
+            public int Top;
+            public int Right;
+            public int Bottom;
+        }
+
+        [DllImport("user32.dll", CharSet = CharSet.Auto)]
+        private static extern IntPtr FindWindow(string className, string windowName);
+
+        [DllImport("user32.dll", CharSet = CharSet.Auto)]
+        private static extern IntPtr FindWindowEx(
+            IntPtr parentHandle,
+            IntPtr childAfter,
+            string className,
+            string windowName);
+
+        [DllImport("user32.dll")]
+        private static extern bool GetWindowRect(IntPtr windowHandle, out RECT bounds);
+
+        [DllImport("user32.dll")]
+        private static extern bool SetWindowPos(
+            IntPtr windowHandle,
+            IntPtr insertAfter,
+            int x,
+            int y,
+            int width,
+            int height,
+            uint flags);
     }
 
     internal sealed class MonitorForm : Form

@@ -11,6 +11,10 @@ if (-not (Test-Path -LiteralPath $sourceExe)) {
     & (Join-Path $projectRoot 'build.ps1')
 }
 
+Get-Process -Name 'TaskbarSystemMonitor' -ErrorAction SilentlyContinue |
+    Stop-Process -Force
+Start-Sleep -Milliseconds 300
+
 New-Item -ItemType Directory -Path $installDirectory -Force | Out-Null
 Copy-Item -LiteralPath $sourceExe -Destination $installedExe -Force
 
