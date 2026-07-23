@@ -12,8 +12,8 @@ using Microsoft.Win32;
 [assembly: System.Reflection.AssemblyCompany("moolean")]
 [assembly: System.Reflection.AssemblyProduct("Taskbar System Monitor")]
 [assembly: System.Reflection.AssemblyCopyright("Copyright © moolean")]
-[assembly: System.Reflection.AssemblyVersion("1.2.1.0")]
-[assembly: System.Reflection.AssemblyFileVersion("1.2.1.0")]
+[assembly: System.Reflection.AssemblyVersion("1.2.2.0")]
+[assembly: System.Reflection.AssemblyFileVersion("1.2.2.0")]
 
 namespace TaskbarSystemMonitor
 {
@@ -408,14 +408,14 @@ namespace TaskbarSystemMonitor
             systemUsesLightTheme = ReadSystemLightTheme();
 
             labelFont = new Font(
-                "Segoe UI Semibold",
-                9.5F,
+                "Segoe UI Variable Text",
+                9F,
                 FontStyle.Regular,
                 GraphicsUnit.Point);
             valueFont = new Font(
-                "Segoe UI",
-                13F,
-                FontStyle.Bold,
+                "Segoe UI Variable Text Semibold",
+                10F,
+                FontStyle.Regular,
                 GraphicsUnit.Point);
 
             SetStyle(
@@ -495,8 +495,8 @@ namespace TaskbarSystemMonitor
 
             if (horizontal)
             {
-                width = Math.Min(232, Math.Max(160, taskbarWidth / 3));
-                height = Math.Min(38, Math.Max(30, taskbarHeight - 4));
+                width = Math.Min(216, Math.Max(156, taskbarWidth / 3));
+                height = Math.Min(34, Math.Max(28, taskbarHeight - 6));
                 y = taskbarBounds.Top + Math.Max(2, (taskbarHeight - height) / 2);
 
                 int notificationLeft = FindNotificationAreaLeft(taskbar, taskbarBounds);
@@ -538,7 +538,7 @@ namespace TaskbarSystemMonitor
                 ? SmoothingMode.None
                 : SmoothingMode.AntiAlias;
             e.Graphics.TextRenderingHint = backgroundMode == WidgetBackgroundMode.Transparent
-                ? System.Drawing.Text.TextRenderingHint.SingleBitPerPixelGridFit
+                ? System.Drawing.Text.TextRenderingHint.AntiAliasGridFit
                 : System.Drawing.Text.TextRenderingHint.ClearTypeGridFit;
 
             using (var background = new SolidBrush(BackColor))
