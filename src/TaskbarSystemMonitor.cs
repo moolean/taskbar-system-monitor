@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Diagnostics;
 using System.Drawing;
 using System.Drawing.Drawing2D;
@@ -13,8 +14,8 @@ using Microsoft.Win32;
 [assembly: System.Reflection.AssemblyCompany("moolean")]
 [assembly: System.Reflection.AssemblyProduct("Taskbar System Monitor")]
 [assembly: System.Reflection.AssemblyCopyright("Copyright © moolean")]
-[assembly: System.Reflection.AssemblyVersion("1.3.0.0")]
-[assembly: System.Reflection.AssemblyFileVersion("1.3.0.0")]
+[assembly: System.Reflection.AssemblyVersion("1.4.0.0")]
+[assembly: System.Reflection.AssemblyFileVersion("1.4.0.0")]
 
 namespace TaskbarSystemMonitor
 {
@@ -28,6 +29,11 @@ namespace TaskbarSystemMonitor
             if (HasArgument(args, "--self-test"))
             {
                 return RunSelfTest();
+            }
+
+            if (HasArgument(args, "--reservation-self-test"))
+            {
+                return TaskbarLayoutReservation.RunIntegrationSelfTest();
             }
 
             bool createdNew;
@@ -75,6 +81,17 @@ namespace TaskbarSystemMonitor
                     snapshot.TotalMemoryBytes == 0)
                 {
                     return 2;
+                }
+
+                Rectangle desired = new Rectangle(400, 1000, 900, 48);
+                Rectangle limited = TaskbarLayoutReservation.LimitBounds(
+                    desired,
+                    true,
+                    1100);
+                if (limited.Right != 1100 || limited.Left != desired.Left ||
+                    limited.Height != desired.Height)
+                {
+                    return 4;
                 }
 
                 return 0;
@@ -285,6 +302,7 @@ namespace TaskbarSystemMonitor
             }
             else
             {
+                taskbarWidget.ReleaseTaskbarReservation();
                 taskbarWidget.Hide();
             }
         }
@@ -397,6 +415,7 @@ namespace TaskbarSystemMonitor
 
         private readonly Font labelFont;
         private readonly Font valueFont;
+        private readonly TaskbarLayoutReservation layoutReservation;
         private SystemSnapshot snapshot;
         private WidgetBackgroundMode backgroundMode;
         private bool systemUsesLightTheme;
@@ -412,6 +431,7 @@ namespace TaskbarSystemMonitor
             DoubleBuffered = true;
             backgroundMode = WidgetBackgroundMode.Transparent;
             systemUsesLightTheme = ReadSystemLightTheme();
+            layoutReservation = new TaskbarLayoutReservation();
 
             labelFont = new Font(
                 "Segoe UI Variable Text",
@@ -473,6 +493,11 @@ namespace TaskbarSystemMonitor
             {
                 Invalidate();
             }
+        }
+
+        public void ReleaseTaskbarReservation()
+        {
+            layoutReservation.Restore();
         }
 
         public void EnsureTaskbarPosition()
@@ -538,6 +563,9 @@ namespace TaskbarSystemMonitor
                 width,
                 height,
                 SwpNoActivate | SwpShowWindow);
+
+            int reservedBoundary = horizontal ? x - 6 : y - 6;
+            layoutReservation.Apply(taskbar, horizontal, reservedBoundary);
 
             if (backgroundMode == WidgetBackgroundMode.Transparent)
             {
@@ -613,6 +641,7 @@ namespace TaskbarSystemMonitor
         {
             if (disposing)
             {
+                layoutReservation.Restore();
                 SystemEvents.UserPreferenceChanged -= HandleUserPreferenceChanged;
                 labelFont.Dispose();
                 valueFont.Dispose();
@@ -1044,6 +1073,388 @@ namespace TaskbarSystemMonitor
             out IntPtr pixelData,
             IntPtr section,
             uint offset);
+    }
+
+    internal sealed class TaskbarLayoutReservation
+    {
+        private const uint SwpNoZOrder = 0x0004;
+        private const uint SwpNoActivate = 0x0010;
+        private const int MinimumHorizontalSize = 96;
+        private const int MinimumVerticalSize = 48;
+
+        private readonly List<LayoutState> states;
+        private IntPtr activeTaskbar;
+
+        public TaskbarLayoutReservation()
+        {
+            states = new List<LayoutState>();
+        }
+
+        public void Apply(IntPtr taskbar, bool horizontal, int reservedBoundary)
+        {
+            List<IntPtr> handles = ResolveTaskAreaHandles(taskbar);
+            if (handles.Count == 0)
+            {
+                Restore();
+                return;
+            }
+
+            if (activeTaskbar != taskbar || !MatchesCurrentHandles(handles))
+            {
+                Restore();
+                activeTaskbar = taskbar;
+                states.Clear();
+
+                foreach (IntPtr handle in handles)
+                {
+                    Rectangle bounds;
+                    if (TryGetBounds(handle, out bounds))
+                    {
+                        states.Add(new LayoutState(handle, bounds));
+                    }
+                }
+            }
+
+            for (int index = 0; index < states.Count; index++)
+            {
+                LayoutState state = states[index];
+                Rectangle current;
+                if (!TryGetBounds(state.Handle, out current))
+                {
+                    continue;
+                }
+
+                state.CurrentBounds = current;
+                if (!state.HasAppliedBounds || current != state.AppliedBounds)
+                {
+                    state.DesiredBounds = current;
+                }
+            }
+
+            for (int index = 0; index < states.Count; index++)
+            {
+                LayoutState state = states[index];
+                Rectangle target = LimitBounds(
+                    state.DesiredBounds,
+                    horizontal,
+                    reservedBoundary);
+
+                if (target != state.CurrentBounds)
+                {
+                    SetBounds(state.Handle, target);
+                }
+
+                state.AppliedBounds = target;
+                state.HasAppliedBounds = true;
+            }
+        }
+
+        public void Restore()
+        {
+            for (int index = 0; index < states.Count; index++)
+            {
+                LayoutState state = states[index];
+                if (IsWindow(state.Handle))
+                {
+                    SetBounds(state.Handle, state.DesiredBounds);
+                }
+            }
+
+            states.Clear();
+            activeTaskbar = IntPtr.Zero;
+        }
+
+        internal static int RunIntegrationSelfTest()
+        {
+            IntPtr taskbar = FindWindow("Shell_TrayWnd", null);
+            if (taskbar == IntPtr.Zero)
+            {
+                return 10;
+            }
+
+            List<IntPtr> handles = ResolveTaskAreaHandles(taskbar);
+            if (handles.Count == 0)
+            {
+                return 11;
+            }
+
+            Rectangle original;
+            if (!TryGetBounds(handles[0], out original))
+            {
+                return 12;
+            }
+
+            bool horizontal = original.Width >= original.Height;
+            int boundary = horizontal
+                ? original.Right - Math.Min(80, Math.Max(24, original.Width / 5))
+                : original.Bottom - Math.Min(80, Math.Max(24, original.Height / 5));
+
+            var reservation = new TaskbarLayoutReservation();
+            bool limitedCorrectly = false;
+            try
+            {
+                reservation.Apply(taskbar, horizontal, boundary);
+                Thread.Sleep(120);
+
+                Rectangle limited;
+                if (TryGetBounds(handles[0], out limited))
+                {
+                    limitedCorrectly = horizontal
+                        ? limited.Right <= boundary + 2
+                        : limited.Bottom <= boundary + 2;
+                }
+            }
+            finally
+            {
+                reservation.Restore();
+            }
+
+            Thread.Sleep(120);
+            Rectangle restored;
+            if (!TryGetBounds(handles[0], out restored))
+            {
+                return 13;
+            }
+
+            bool restoredCorrectly =
+                Math.Abs(restored.Left - original.Left) <= 2 &&
+                Math.Abs(restored.Top - original.Top) <= 2 &&
+                Math.Abs(restored.Right - original.Right) <= 2 &&
+                Math.Abs(restored.Bottom - original.Bottom) <= 2;
+
+            return limitedCorrectly && restoredCorrectly ? 0 : 14;
+        }
+
+        internal static Rectangle LimitBounds(
+            Rectangle desired,
+            bool horizontal,
+            int reservedBoundary)
+        {
+            if (horizontal)
+            {
+                if (reservedBoundary <= desired.Left + MinimumHorizontalSize ||
+                    desired.Right <= reservedBoundary)
+                {
+                    return desired;
+                }
+
+                return Rectangle.FromLTRB(
+                    desired.Left,
+                    desired.Top,
+                    reservedBoundary,
+                    desired.Bottom);
+            }
+
+            if (reservedBoundary <= desired.Top + MinimumVerticalSize ||
+                desired.Bottom <= reservedBoundary)
+            {
+                return desired;
+            }
+
+            return Rectangle.FromLTRB(
+                desired.Left,
+                desired.Top,
+                desired.Right,
+                reservedBoundary);
+        }
+
+        private bool MatchesCurrentHandles(List<IntPtr> handles)
+        {
+            if (states.Count != handles.Count)
+            {
+                return false;
+            }
+
+            for (int index = 0; index < handles.Count; index++)
+            {
+                if (states[index].Handle != handles[index])
+                {
+                    return false;
+                }
+            }
+
+            return true;
+        }
+
+        private static List<IntPtr> ResolveTaskAreaHandles(IntPtr taskbar)
+        {
+            var handles = new List<IntPtr>();
+
+            IntPtr rebar = FindWindowEx(
+                taskbar,
+                IntPtr.Zero,
+                "ReBarWindow32",
+                null);
+            if (rebar != IntPtr.Zero)
+            {
+                handles.Add(rebar);
+            }
+
+            IntPtr taskSwitcher = FindDescendant(taskbar, "MSTaskSwWClass");
+            if (taskSwitcher != IntPtr.Zero)
+            {
+                handles.Add(taskSwitcher);
+            }
+
+            IntPtr taskList = FindDescendant(taskbar, "MSTaskListWClass");
+            if (taskList != IntPtr.Zero)
+            {
+                handles.Add(taskList);
+            }
+
+            return handles;
+        }
+
+        private static IntPtr FindDescendant(IntPtr parent, string className)
+        {
+            IntPtr found = IntPtr.Zero;
+            EnumWindowsProc callback = delegate(IntPtr handle, IntPtr parameter)
+            {
+                var buffer = new System.Text.StringBuilder(128);
+                GetClassName(handle, buffer, buffer.Capacity);
+                if (string.Equals(
+                    buffer.ToString(),
+                    className,
+                    StringComparison.Ordinal))
+                {
+                    found = handle;
+                    return false;
+                }
+
+                return true;
+            };
+
+            EnumChildWindows(parent, callback, IntPtr.Zero);
+            return found;
+        }
+
+        private static bool TryGetBounds(IntPtr handle, out Rectangle bounds)
+        {
+            NativeRect nativeBounds;
+            if (!GetWindowRect(handle, out nativeBounds))
+            {
+                bounds = Rectangle.Empty;
+                return false;
+            }
+
+            bounds = Rectangle.FromLTRB(
+                nativeBounds.Left,
+                nativeBounds.Top,
+                nativeBounds.Right,
+                nativeBounds.Bottom);
+            return true;
+        }
+
+        private static void SetBounds(IntPtr handle, Rectangle screenBounds)
+        {
+            IntPtr parent = GetParent(handle);
+            var origin = new NativePoint(screenBounds.Left, screenBounds.Top);
+            if (parent != IntPtr.Zero)
+            {
+                ScreenToClient(parent, ref origin);
+            }
+
+            SetWindowPos(
+                handle,
+                IntPtr.Zero,
+                origin.X,
+                origin.Y,
+                Math.Max(1, screenBounds.Width),
+                Math.Max(1, screenBounds.Height),
+                SwpNoZOrder | SwpNoActivate);
+        }
+
+        private sealed class LayoutState
+        {
+            public LayoutState(IntPtr handle, Rectangle desiredBounds)
+            {
+                Handle = handle;
+                DesiredBounds = desiredBounds;
+                CurrentBounds = desiredBounds;
+                AppliedBounds = Rectangle.Empty;
+                HasAppliedBounds = false;
+            }
+
+            public IntPtr Handle;
+            public Rectangle DesiredBounds;
+            public Rectangle CurrentBounds;
+            public Rectangle AppliedBounds;
+            public bool HasAppliedBounds;
+        }
+
+        private delegate bool EnumWindowsProc(IntPtr handle, IntPtr parameter);
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct NativePoint
+        {
+            public NativePoint(int x, int y)
+            {
+                X = x;
+                Y = y;
+            }
+
+            public int X;
+            public int Y;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct NativeRect
+        {
+            public int Left;
+            public int Top;
+            public int Right;
+            public int Bottom;
+        }
+
+        [DllImport("user32.dll", CharSet = CharSet.Auto)]
+        private static extern IntPtr FindWindow(
+            string className,
+            string windowName);
+
+        [DllImport("user32.dll", CharSet = CharSet.Auto)]
+        private static extern IntPtr FindWindowEx(
+            IntPtr parentHandle,
+            IntPtr childAfter,
+            string className,
+            string windowName);
+
+        [DllImport("user32.dll")]
+        private static extern bool EnumChildWindows(
+            IntPtr parentHandle,
+            EnumWindowsProc callback,
+            IntPtr parameter);
+
+        [DllImport("user32.dll", CharSet = CharSet.Auto)]
+        private static extern int GetClassName(
+            IntPtr windowHandle,
+            System.Text.StringBuilder className,
+            int maximumCount);
+
+        [DllImport("user32.dll")]
+        private static extern IntPtr GetParent(IntPtr windowHandle);
+
+        [DllImport("user32.dll")]
+        private static extern bool GetWindowRect(
+            IntPtr windowHandle,
+            out NativeRect bounds);
+
+        [DllImport("user32.dll")]
+        private static extern bool ScreenToClient(
+            IntPtr windowHandle,
+            ref NativePoint point);
+
+        [DllImport("user32.dll")]
+        private static extern bool IsWindow(IntPtr windowHandle);
+
+        [DllImport("user32.dll")]
+        private static extern bool SetWindowPos(
+            IntPtr windowHandle,
+            IntPtr insertAfter,
+            int x,
+            int y,
+            int width,
+            int height,
+            uint flags);
     }
 
     internal static class WidgetPreferences
