@@ -14,8 +14,8 @@ using Microsoft.Win32;
 [assembly: System.Reflection.AssemblyCompany("moolean")]
 [assembly: System.Reflection.AssemblyProduct("Taskbar System Monitor")]
 [assembly: System.Reflection.AssemblyCopyright("Copyright © moolean")]
-[assembly: System.Reflection.AssemblyVersion("1.4.0.0")]
-[assembly: System.Reflection.AssemblyFileVersion("1.4.0.0")]
+[assembly: System.Reflection.AssemblyVersion("1.4.1.0")]
+[assembly: System.Reflection.AssemblyFileVersion("1.4.1.0")]
 
 namespace TaskbarSystemMonitor
 {
@@ -34,6 +34,11 @@ namespace TaskbarSystemMonitor
             if (HasArgument(args, "--reservation-self-test"))
             {
                 return TaskbarLayoutReservation.RunIntegrationSelfTest();
+            }
+
+            if (HasArgument(args, "--composition-self-test"))
+            {
+                return TaskbarCompositionExclusion.RunIntegrationSelfTest();
             }
 
             bool createdNew;
@@ -92,6 +97,18 @@ namespace TaskbarSystemMonitor
                     limited.Height != desired.Height)
                 {
                     return 4;
+                }
+
+                Rectangle bridge = new Rectangle(0, 1000, 2000, 48);
+                Rectangle exclusion =
+                    TaskbarCompositionExclusion.CalculateExclusion(
+                        bridge,
+                        true,
+                        1500,
+                        1750);
+                if (exclusion != new Rectangle(1500, 1000, 250, 48))
+                {
+                    return 5;
                 }
 
                 return 0;
@@ -156,13 +173,15 @@ namespace TaskbarSystemMonitor
             widgetItem.Checked = true;
             widgetItem.Click += ToggleTaskbarWidget;
 
-            transparentBackgroundItem = new ToolStripMenuItem("透明背景");
+            transparentBackgroundItem =
+                new ToolStripMenuItem("无缝任务栏背景（推荐）");
             transparentBackgroundItem.Click += delegate
             {
                 SetWidgetBackgroundMode(WidgetBackgroundMode.Transparent);
             };
 
-            systemBackgroundItem = new ToolStripMenuItem("跟随系统深浅色");
+            systemBackgroundItem =
+                new ToolStripMenuItem("固定系统深浅色");
             systemBackgroundItem.Click += delegate
             {
                 SetWidgetBackgroundMode(WidgetBackgroundMode.System);
@@ -416,9 +435,11 @@ namespace TaskbarSystemMonitor
         private readonly Font labelFont;
         private readonly Font valueFont;
         private readonly TaskbarLayoutReservation layoutReservation;
+        private readonly TaskbarCompositionExclusion compositionExclusion;
         private SystemSnapshot snapshot;
         private WidgetBackgroundMode backgroundMode;
         private bool systemUsesLightTheme;
+        private Color taskbarBackdropColor;
 
         public TaskbarWidgetForm()
         {
@@ -431,7 +452,11 @@ namespace TaskbarSystemMonitor
             DoubleBuffered = true;
             backgroundMode = WidgetBackgroundMode.Transparent;
             systemUsesLightTheme = ReadSystemLightTheme();
+            taskbarBackdropColor = systemUsesLightTheme
+                ? Color.FromArgb(243, 243, 243)
+                : Color.FromArgb(32, 32, 32);
             layoutReservation = new TaskbarLayoutReservation();
+            compositionExclusion = new TaskbarCompositionExclusion();
 
             labelFont = new Font(
                 "Segoe UI Variable Text",
@@ -497,6 +522,7 @@ namespace TaskbarSystemMonitor
 
         public void ReleaseTaskbarReservation()
         {
+            compositionExclusion.Restore();
             layoutReservation.Restore();
         }
 
@@ -530,8 +556,8 @@ namespace TaskbarSystemMonitor
             if (horizontal)
             {
                 width = Math.Min(216, Math.Max(156, taskbarWidth / 3));
-                height = Math.Min(34, Math.Max(28, taskbarHeight - 6));
-                y = taskbarBounds.Top + Math.Max(2, (taskbarHeight - height) / 2);
+                height = taskbarHeight;
+                y = taskbarBounds.Top;
 
                 int notificationLeft = FindNotificationAreaLeft(taskbar, taskbarBounds);
                 x = notificationLeft - width - 8;
@@ -540,9 +566,9 @@ namespace TaskbarSystemMonitor
             }
             else
             {
-                width = Math.Max(34, taskbarWidth - 6);
+                width = taskbarWidth;
                 height = 70;
-                x = taskbarBounds.Left + Math.Max(2, (taskbarWidth - width) / 2);
+                x = taskbarBounds.Left;
 
                 int notificationTop = FindNotificationAreaTop(taskbar, taskbarBounds);
                 y = notificationTop - height - 8;
@@ -564,8 +590,18 @@ namespace TaskbarSystemMonitor
                 height,
                 SwpNoActivate | SwpShowWindow);
 
+            taskbarBackdropColor = SampleTaskbarBackdrop(
+                taskbarBounds,
+                horizontal,
+                taskbarBackdropColor);
+
             int reservedBoundary = horizontal ? x - 6 : y - 6;
             layoutReservation.Apply(taskbar, horizontal, reservedBoundary);
+            compositionExclusion.Apply(
+                taskbar,
+                horizontal,
+                horizontal ? x : y,
+                horizontal ? x + width : y + height);
 
             if (backgroundMode == WidgetBackgroundMode.Transparent)
             {
@@ -641,6 +677,7 @@ namespace TaskbarSystemMonitor
         {
             if (disposing)
             {
+                compositionExclusion.Restore();
                 layoutReservation.Restore();
                 SystemEvents.UserPreferenceChanged -= HandleUserPreferenceChanged;
                 labelFont.Dispose();
@@ -765,7 +802,7 @@ namespace TaskbarSystemMonitor
                     pixelData))
                 using (Graphics graphics = Graphics.FromImage(bitmap))
                 {
-                    graphics.Clear(Color.Transparent);
+                    graphics.Clear(taskbarBackdropColor);
                     graphics.CompositingMode = CompositingMode.SourceOver;
                     graphics.CompositingQuality = CompositingQuality.HighQuality;
                     DrawWidget(graphics, false);
@@ -945,6 +982,44 @@ namespace TaskbarSystemMonitor
             return fallback.Bottom - Math.Min(160, Math.Max(90, (fallback.Bottom - fallback.Top) / 4));
         }
 
+        private static Color SampleTaskbarBackdrop(
+            RECT taskbarBounds,
+            bool horizontal,
+            Color fallback)
+        {
+            IntPtr screenDc = GetDC(IntPtr.Zero);
+            if (screenDc == IntPtr.Zero)
+            {
+                return fallback;
+            }
+
+            try
+            {
+                int width = taskbarBounds.Right - taskbarBounds.Left;
+                int height = taskbarBounds.Bottom - taskbarBounds.Top;
+                int x = horizontal
+                    ? taskbarBounds.Right - 2
+                    : taskbarBounds.Left + width / 2;
+                int y = horizontal
+                    ? taskbarBounds.Top + height / 2
+                    : taskbarBounds.Bottom - 2;
+                int colorReference = GetPixel(screenDc, x, y);
+                if (colorReference == -1)
+                {
+                    return fallback;
+                }
+
+                return Color.FromArgb(
+                    colorReference & 0xFF,
+                    (colorReference >> 8) & 0xFF,
+                    (colorReference >> 16) & 0xFF);
+            }
+            finally
+            {
+                ReleaseDC(IntPtr.Zero, screenDc);
+            }
+        }
+
         [StructLayout(LayoutKind.Sequential)]
         private struct RECT
         {
@@ -1057,6 +1132,12 @@ namespace TaskbarSystemMonitor
         private static extern IntPtr CreateCompatibleDC(IntPtr deviceContext);
 
         [DllImport("gdi32.dll")]
+        private static extern int GetPixel(
+            IntPtr deviceContext,
+            int x,
+            int y);
+
+        [DllImport("gdi32.dll")]
         private static extern bool DeleteDC(IntPtr deviceContext);
 
         [DllImport("gdi32.dll")]
@@ -1073,6 +1154,343 @@ namespace TaskbarSystemMonitor
             out IntPtr pixelData,
             IntPtr section,
             uint offset);
+    }
+
+    internal sealed class TaskbarCompositionExclusion
+    {
+        private const int ErrorRegion = 0;
+        private const int ComplexRegion = 3;
+        private const int RegionDifference = 4;
+        private const string CompositionBridgeClass =
+            "Windows.UI.Composition.DesktopWindowContentBridge";
+
+        private IntPtr activeBridge;
+        private IntPtr originalRegion;
+        private bool hadOriginalRegion;
+        private Rectangle appliedBridgeBounds;
+        private Rectangle appliedExclusion;
+
+        public bool Apply(
+            IntPtr taskbar,
+            bool horizontal,
+            int reservedBoundary,
+            int reservationEnd)
+        {
+            IntPtr bridge = FindLargestDescendant(
+                taskbar,
+                CompositionBridgeClass);
+            NativeRect nativeBounds;
+            if (bridge == IntPtr.Zero ||
+                !GetWindowRect(bridge, out nativeBounds))
+            {
+                Restore();
+                return false;
+            }
+
+            Rectangle bridgeBounds = Rectangle.FromLTRB(
+                nativeBounds.Left,
+                nativeBounds.Top,
+                nativeBounds.Right,
+                nativeBounds.Bottom);
+            Rectangle exclusion = CalculateExclusion(
+                bridgeBounds,
+                horizontal,
+                reservedBoundary,
+                reservationEnd);
+
+            if (exclusion.Width <= 0 || exclusion.Height <= 0)
+            {
+                Restore();
+                return false;
+            }
+
+            if (activeBridge != bridge)
+            {
+                Restore();
+                CaptureOriginalRegion(bridge);
+            }
+
+            if (bridgeBounds == appliedBridgeBounds &&
+                exclusion == appliedExclusion)
+            {
+                return true;
+            }
+
+            IntPtr visibleRegion = CreateRectRgn(
+                0,
+                0,
+                bridgeBounds.Width,
+                bridgeBounds.Height);
+            IntPtr excludedRegion = CreateRectRgn(
+                exclusion.Left - bridgeBounds.Left,
+                exclusion.Top - bridgeBounds.Top,
+                exclusion.Right - bridgeBounds.Left,
+                exclusion.Bottom - bridgeBounds.Top);
+
+            if (visibleRegion == IntPtr.Zero ||
+                excludedRegion == IntPtr.Zero)
+            {
+                if (visibleRegion != IntPtr.Zero)
+                {
+                    DeleteObject(visibleRegion);
+                }
+                if (excludedRegion != IntPtr.Zero)
+                {
+                    DeleteObject(excludedRegion);
+                }
+                return false;
+            }
+
+            int regionType = CombineRgn(
+                visibleRegion,
+                visibleRegion,
+                excludedRegion,
+                RegionDifference);
+            DeleteObject(excludedRegion);
+
+            if (regionType == ErrorRegion ||
+                SetWindowRgn(bridge, visibleRegion, true) == 0)
+            {
+                DeleteObject(visibleRegion);
+                return false;
+            }
+
+            // SetWindowRgn owns visibleRegion after a successful call.
+            appliedBridgeBounds = bridgeBounds;
+            appliedExclusion = exclusion;
+            return true;
+        }
+
+        public void Restore()
+        {
+            if (activeBridge != IntPtr.Zero && IsWindow(activeBridge))
+            {
+                if (hadOriginalRegion && originalRegion != IntPtr.Zero)
+                {
+                    IntPtr regionToRestore = originalRegion;
+                    if (SetWindowRgn(activeBridge, regionToRestore, true) != 0)
+                    {
+                        originalRegion = IntPtr.Zero;
+                    }
+                }
+                else
+                {
+                    SetWindowRgn(activeBridge, IntPtr.Zero, true);
+                }
+            }
+
+            if (originalRegion != IntPtr.Zero)
+            {
+                DeleteObject(originalRegion);
+            }
+
+            activeBridge = IntPtr.Zero;
+            originalRegion = IntPtr.Zero;
+            hadOriginalRegion = false;
+            appliedBridgeBounds = Rectangle.Empty;
+            appliedExclusion = Rectangle.Empty;
+        }
+
+        internal static Rectangle CalculateExclusion(
+            Rectangle bridgeBounds,
+            bool horizontal,
+            int reservedBoundary,
+            int reservationEnd)
+        {
+            if (horizontal)
+            {
+                return Rectangle.FromLTRB(
+                    Math.Max(bridgeBounds.Left, reservedBoundary),
+                    bridgeBounds.Top,
+                    Math.Min(bridgeBounds.Right, reservationEnd),
+                    bridgeBounds.Bottom);
+            }
+
+            return Rectangle.FromLTRB(
+                bridgeBounds.Left,
+                Math.Max(bridgeBounds.Top, reservedBoundary),
+                bridgeBounds.Right,
+                Math.Min(bridgeBounds.Bottom, reservationEnd));
+        }
+
+        internal static int RunIntegrationSelfTest()
+        {
+            IntPtr taskbar = FindWindow("Shell_TrayWnd", null);
+            IntPtr bridge = FindLargestDescendant(
+                taskbar,
+                CompositionBridgeClass);
+            NativeRect bounds;
+            if (taskbar == IntPtr.Zero ||
+                bridge == IntPtr.Zero ||
+                !GetWindowRect(bridge, out bounds))
+            {
+                return 20;
+            }
+
+            bool horizontal =
+                bounds.Right - bounds.Left >= bounds.Bottom - bounds.Top;
+            int length = horizontal
+                ? bounds.Right - bounds.Left
+                : bounds.Bottom - bounds.Top;
+            int start = horizontal
+                ? bounds.Left + length / 2
+                : bounds.Top + length / 2;
+            int end = Math.Min(
+                horizontal ? bounds.Right - 1 : bounds.Bottom - 1,
+                start + Math.Max(8, length / 16));
+
+            var exclusion = new TaskbarCompositionExclusion();
+            try
+            {
+                if (!exclusion.Apply(taskbar, horizontal, start, end))
+                {
+                    return 21;
+                }
+
+                IntPtr observedRegion = CreateRectRgn(0, 0, 0, 0);
+                if (observedRegion == IntPtr.Zero)
+                {
+                    return 22;
+                }
+
+                int regionType = GetWindowRgn(bridge, observedRegion);
+                DeleteObject(observedRegion);
+                return regionType == ComplexRegion ? 0 : 23;
+            }
+            finally
+            {
+                exclusion.Restore();
+            }
+        }
+
+        private void CaptureOriginalRegion(IntPtr bridge)
+        {
+            activeBridge = bridge;
+            originalRegion = CreateRectRgn(0, 0, 0, 0);
+            if (originalRegion == IntPtr.Zero)
+            {
+                hadOriginalRegion = false;
+                return;
+            }
+
+            int regionType = GetWindowRgn(bridge, originalRegion);
+            if (regionType == ErrorRegion)
+            {
+                DeleteObject(originalRegion);
+                originalRegion = IntPtr.Zero;
+                hadOriginalRegion = false;
+                return;
+            }
+
+            hadOriginalRegion = true;
+        }
+
+        private static IntPtr FindLargestDescendant(
+            IntPtr parent,
+            string expectedClass)
+        {
+            if (parent == IntPtr.Zero)
+            {
+                return IntPtr.Zero;
+            }
+
+            IntPtr largest = IntPtr.Zero;
+            long largestArea = -1;
+            EnumWindowsProc callback = delegate(IntPtr handle, IntPtr parameter)
+            {
+                var className = new System.Text.StringBuilder(128);
+                GetClassName(handle, className, className.Capacity);
+                if (!string.Equals(
+                    className.ToString(),
+                    expectedClass,
+                    StringComparison.Ordinal))
+                {
+                    return true;
+                }
+
+                NativeRect bounds;
+                if (GetWindowRect(handle, out bounds))
+                {
+                    long width = Math.Max(0, bounds.Right - bounds.Left);
+                    long height = Math.Max(0, bounds.Bottom - bounds.Top);
+                    long area = width * height;
+                    if (area > largestArea)
+                    {
+                        largest = handle;
+                        largestArea = area;
+                    }
+                }
+
+                return true;
+            };
+
+            EnumChildWindows(parent, callback, IntPtr.Zero);
+            return largest;
+        }
+
+        private delegate bool EnumWindowsProc(IntPtr handle, IntPtr parameter);
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct NativeRect
+        {
+            public int Left;
+            public int Top;
+            public int Right;
+            public int Bottom;
+        }
+
+        [DllImport("user32.dll", CharSet = CharSet.Auto)]
+        private static extern IntPtr FindWindow(
+            string className,
+            string windowName);
+
+        [DllImport("user32.dll")]
+        private static extern bool EnumChildWindows(
+            IntPtr parentHandle,
+            EnumWindowsProc callback,
+            IntPtr parameter);
+
+        [DllImport("user32.dll", CharSet = CharSet.Auto)]
+        private static extern int GetClassName(
+            IntPtr windowHandle,
+            System.Text.StringBuilder className,
+            int maximumCount);
+
+        [DllImport("user32.dll")]
+        private static extern bool GetWindowRect(
+            IntPtr windowHandle,
+            out NativeRect bounds);
+
+        [DllImport("user32.dll")]
+        private static extern bool IsWindow(IntPtr windowHandle);
+
+        [DllImport("user32.dll")]
+        private static extern int GetWindowRgn(
+            IntPtr windowHandle,
+            IntPtr region);
+
+        [DllImport("user32.dll")]
+        private static extern int SetWindowRgn(
+            IntPtr windowHandle,
+            IntPtr region,
+            bool redraw);
+
+        [DllImport("gdi32.dll")]
+        private static extern IntPtr CreateRectRgn(
+            int left,
+            int top,
+            int right,
+            int bottom);
+
+        [DllImport("gdi32.dll")]
+        private static extern int CombineRgn(
+            IntPtr destination,
+            IntPtr source1,
+            IntPtr source2,
+            int combineMode);
+
+        [DllImport("gdi32.dll")]
+        private static extern bool DeleteObject(IntPtr graphicsObject);
     }
 
     internal sealed class TaskbarLayoutReservation
