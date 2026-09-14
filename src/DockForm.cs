@@ -13,15 +13,17 @@ namespace TaskbarSystemMonitor
         private Settings settings;
         private Snapshot snapshot;
         private Palette palette;
+        private string hovered;
         private readonly ToolTip tooltip = new ToolTip();
         internal event EventHandler DetailsRequested, SettingsRequested, ExplorerRestarted;
+        internal event Action<string> ModuleRequested;
         internal bool Registered { get { return registered; } }
         internal int LayoutChanges { get; private set; }
 
         internal DockForm(Settings configuration)
         {
             settings = configuration;
-            palette = Palette.Current(settings.Theme);
+            palette = Palette.Current(settings);
             Text = "Taskbar System Monitor AppBar";
             FormBorderStyle = FormBorderStyle.None;
             ShowInTaskbar = false;
@@ -43,7 +45,7 @@ namespace TaskbarSystemMonitor
         }
         internal void Apply(Settings value)
         {
-            settings = value; palette = Palette.Current(settings.Theme);
+            settings = value; palette = Palette.Current(settings);
             if (Visible) PositionBar();
             Invalidate();
         }
@@ -116,7 +118,7 @@ namespace TaskbarSystemMonitor
         private void ThemeChanged(object sender, UserPreferenceChangedEventArgs e)
         {
             if (!IsHandleCreated || disposing) return;
-            BeginInvoke(new MethodInvoker(delegate { if (!disposing) { palette = Palette.Current(settings.Theme); Invalidate(); } }));
+            BeginInvoke(new MethodInvoker(delegate { if (!disposing) { palette = Palette.Current(settings); Invalidate(); } }));
         }
         protected override void WndProc(ref Message m)
         {
@@ -152,9 +154,29 @@ namespace TaskbarSystemMonitor
             base.OnMouseClick(e);
             if (e.Button == MouseButtons.Right || e.X >= Width - BarRenderer.Scale(30, Native.Dpi(Handle)))
             { if (SettingsRequested != null) SettingsRequested(this, EventArgs.Empty); }
-            else if (e.Button == MouseButtons.Left && DetailsRequested != null) DetailsRequested(this, EventArgs.Empty);
+            else if (e.Button == MouseButtons.Left)
+            {
+                string id = Hit(e.Location);
+                if (id != null && ModuleRequested != null) ModuleRequested(id);
+                else if (DetailsRequested != null) DetailsRequested(this, EventArgs.Empty);
+            }
         }
-        protected override void OnPaint(PaintEventArgs e) { BarRenderer.Draw(e.Graphics, ClientRectangle, settings, snapshot, palette, Native.Dpi(Handle)); }
+        private string Hit(Point point)
+        {
+            using (var graphics = CreateGraphics())
+            { int hidden; foreach (var cell in BarRenderer.Layout(graphics, ClientRectangle, settings, snapshot, Native.Dpi(Handle), out hidden)) if (cell.Bounds.Contains(point)) return cell.Id; }
+            return null;
+        }
+        protected override void OnMouseMove(MouseEventArgs e)
+        {
+            base.OnMouseMove(e); string id = Hit(e.Location);
+            if (hovered == id) return;
+            hovered = id; Cursor = id == null ? Cursors.Default : Cursors.Hand;
+            tooltip.SetToolTip(this, id == null ? "右键打开设置" : BarRenderer.Label(id) + " " + (snapshot == null ? "—" : snapshot.Value(id)) + "\n点击展开详情 · 右键设置");
+            Invalidate();
+        }
+        protected override void OnMouseLeave(EventArgs e) { base.OnMouseLeave(e); hovered = null; Invalidate(); }
+        protected override void OnPaint(PaintEventArgs e) { BarRenderer.Draw(e.Graphics, ClientRectangle, settings, snapshot, palette, Native.Dpi(Handle), hovered); }
         protected override void OnHandleDestroyed(EventArgs e) { Unregister(); base.OnHandleDestroyed(e); }
         protected override void Dispose(bool value)
         {

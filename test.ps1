@@ -7,7 +7,7 @@ $exe = Join-Path $projectRoot 'dist\TaskbarSystemMonitor.exe'
 $test = Start-Process -FilePath $exe -ArgumentList '--self-test' -WindowStyle Hidden -PassThru
 if (-not $test.WaitForExit(30000)) { throw "Self-test timed out (PID $($test.Id))." }
 if ($test.ExitCode -ne 0) { throw "Self-test failed: $($test.ExitCode). See error.log." }
-Write-Host 'PASS: sampling, settings persistence, and 108 layout combinations.'
+Write-Host 'PASS: sampling, settings/work persistence, quota/calendar parsing, credential protection, full-width layout, and 108 layout combinations.'
 if ($Desktop) {
     $report = Join-Path $projectRoot 'dist\desktop-test.txt'
     $test = Start-Process -FilePath $exe -ArgumentList ('"--appbar-test=' + $report + '"') -WindowStyle Hidden -PassThru

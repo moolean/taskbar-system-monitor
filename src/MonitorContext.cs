@@ -16,9 +16,13 @@ namespace TaskbarSystemMonitor
         private readonly Stopwatch samplingClock = Stopwatch.StartNew();
         private DockForm dock;
         private DetailsForm details;
+        private ModulePopup popup;
+        private SettingsForm activeSettings;
+        private readonly InfoHub info = new InfoHub();
         private Settings settings;
         private Snapshot last;
         private EventWaitHandle exitSignal, showSignal;
+        private readonly System.Collections.Generic.Dictionary<string, EventWaitHandle> actions = new System.Collections.Generic.Dictionary<string, EventWaitHandle>();
         private bool stopping, settingsOpen;
 
         internal MonitorContext(string[] args)
@@ -28,6 +32,7 @@ namespace TaskbarSystemMonitor
                 settings = Settings.Load(Settings.DefaultPath);
                 dock = new DockForm(settings);
                 details = new DetailsForm();
+                popup = new ModulePopup();
                 details.Apply(settings);
                 tray = new NotifyIcon { Text = "系统监控", Icon = TrayIcon(null, null) };
                 tray.ContextMenuStrip = BuildMenu();
@@ -35,16 +40,26 @@ namespace TaskbarSystemMonitor
                 dock.DetailsRequested += delegate { ShowDetails(); };
                 dock.SettingsRequested += delegate { ShowSettings(); };
                 details.SettingsRequested += delegate { ShowSettings(); };
+                dock.ModuleRequested += ShowModule;
+                popup.ConfigureRequested += delegate(string page) { ShowSettings(page); };
+                popup.RefreshRequested += delegate { info.Reset(); info.Pulse(settings); };
+                popup.WorkEdited += delegate(int index, WorkItem item)
+                {
+                    var next = settings.Copy(); if (index < 0 || index >= next.WorkItems.Count) return;
+                    next.WorkItems[index] = item; if (SaveSettings(next)) { settings = next; ApplySettings(); }
+                };
                 // Poll auto-reset IPC events on the UI thread. This also works when
                 // the bar has never been shown (and therefore has no window handle).
                 exitSignal = new EventWaitHandle(false, EventResetMode.AutoReset, Program.ExitEvent);
                 showSignal = new EventWaitHandle(false, EventResetMode.AutoReset, Program.ShowEvent);
+                foreach (string action in Program.Actions) actions[action] = new EventWaitHandle(false, EventResetMode.AutoReset, Program.ActionEvent + action);
                 tray.Visible = true;
                 if (settings.Dock) dock.Show();
                 timer = new System.Windows.Forms.Timer { Interval = 250 };
                 timer.Tick += delegate { Tick(); };
                 timer.Start();
                 Tick();
+                string requested = Program.RequestedAction(args); if (requested != null) actions[requested].Set();
                 if (settings.FirstRun)
                 {
                     try { Startup.Set(true); }
@@ -94,18 +109,20 @@ namespace TaskbarSystemMonitor
             return menu;
         }
 
-        private void ShowSettings()
+        private void ShowSettings(string page = null)
         {
             if (stopping || settingsOpen) return;
             settingsOpen = true;
             try
             {
-                using (var form = new SettingsForm(settings))
-                    if (form.ShowDialog() == DialogResult.OK && !stopping && SaveSettings(form.Value))
-                    { settings = form.Value; ApplySettings(); }
+                using (var form = new SettingsForm(settings, page))
+                {
+                    activeSettings = form;
+                    if (form.ShowDialog() == DialogResult.OK && !stopping && SaveSettings(form.Value)) { settings = form.Value; ApplySettings(); }
+                }
             }
             catch (Exception error) { ReportError("设置未能应用，请重试。", error); }
-            finally { settingsOpen = false; }
+            finally { settingsOpen = false; activeSettings = null; }
         }
 
         private bool SaveSettings(Settings value)
@@ -119,6 +136,7 @@ namespace TaskbarSystemMonitor
             // Hiding first releases the reservation immediately.
             if (!settings.Dock) dock.Hide();
             dock.Apply(settings); details.Apply(settings);
+            info.Reset();
             if (settings.Dock && !dock.Visible) dock.Show();
             samplingClock.Restart();
         }
@@ -128,6 +146,13 @@ namespace TaskbarSystemMonitor
             if (stopping) return;
             if (exitSignal.WaitOne(0)) { BeginExit(); return; }
             if (showSignal.WaitOne(0)) ShowDetails();
+            foreach (var action in actions)
+            {
+                if (stopping) return;
+                if (action.Value.WaitOne(0)) { if (action.Key == "Settings") ShowSettings(); else ShowModule(action.Key); }
+            }
+            if (stopping) return;
+            info.Pulse(settings);
             if (last != null && samplingClock.ElapsedMilliseconds < settings.Interval) return;
             samplingClock.Restart();
             try
@@ -137,7 +162,9 @@ namespace TaskbarSystemMonitor
                 try { network.Sample(value, settings.NetworkId); }
                 catch (Exception error) { Log.Error(error); value.NetworkName = "网络暂不可用"; }
                 value.Battery = NetworkSampler.Battery();
+                value.Briefing = info.Snapshot(settings);
                 last = value; history.Add(value); dock.UpdateSnapshot(value); details.SetData(value, history);
+                popup.UpdateData(settings, value);
                 tray.Text = "CPU " + value.CpuText + " · 内存 " + value.MemoryText;
                 using (Icon old = tray.Icon) tray.Icon = TrayIcon(value.Cpu, value.Memory);
             }
@@ -151,6 +178,11 @@ namespace TaskbarSystemMonitor
             if (!details.Visible) details.Show();
             details.Activate();
         }
+        private void ShowModule(string id)
+        {
+            if (id == "Codex" || id == "Calendar" || id == "Ip" || id == "Tracks") popup.OpenModule(id, settings, last);
+            else ShowDetails();
+        }
         private void ReportError(string message, Exception error)
         {
             Log.Error(error);
@@ -162,9 +194,12 @@ namespace TaskbarSystemMonitor
             if (stopping) return;
             stopping = true;
             if (timer != null) { timer.Stop(); timer.Dispose(); }
+            info.Dispose();
+            if (activeSettings != null) { activeSettings.DialogResult = DialogResult.Cancel; activeSettings.Close(); }
             // Dispose the AppBar before anything else so Explorer gets ABM_REMOVE.
             if (dock != null) dock.Dispose();
             if (details != null) details.Dispose();
+            if (popup != null) popup.Dispose();
             if (tray != null)
             {
                 tray.Visible = false;
@@ -173,6 +208,7 @@ namespace TaskbarSystemMonitor
             }
             if (exitSignal != null) exitSignal.Dispose();
             if (showSignal != null) showSignal.Dispose();
+            foreach (var action in actions.Values) action.Dispose();
         }
         protected override void Dispose(bool disposing) { if (disposing) Cleanup(); base.Dispose(disposing); }
         private static Color Shade(double? value) { return value >= 85 ? Color.FromArgb(225,84,91) : value >= 65 ? Color.FromArgb(220,159,64) : Color.FromArgb(49,183,220); }

@@ -12,6 +12,7 @@ namespace TaskbarSystemMonitor
         {
             try
             {
+                InfoTests.Run();
                 var sampler = new Sampler(); Snapshot first = sampler.Sample(); System.Threading.Thread.Sleep(120); Snapshot second = sampler.Sample();
                 if (first == null || second == null || second.TotalBytes == 0 || second.Memory < 0 || second.Memory > 100) return 2;
                 if (first.Cpu != null || Sampler.Calculate(4, 10, 20, 5, 10, 20) != null || Sampler.Calculate(0, 0, 0, 50, 100, 100) != 75 || Sampler.Calculate(100, 100, 100, 0, 0, 0) != null) return 3;
@@ -54,8 +55,7 @@ namespace TaskbarSystemMonitor
                 if (Array.Exists(args, x => x.StartsWith("--write-preview=", StringComparison.OrdinalIgnoreCase)))
                 {
                     string previewPath = args.First(x => x.StartsWith("--write-preview=", StringComparison.OrdinalIgnoreCase)).Substring(16);
-                    using (var preview = new BarPreview { Settings = new Settings { Theme = "Light", Height = 24, FontSize = 9 }, Size = new Size(1000, 24) })
-                    using (var bitmap = new Bitmap(1000, 24)) { preview.CreateControl(); preview.DrawToBitmap(bitmap, new Rectangle(Point.Empty, bitmap.Size)); bitmap.Save(previewPath, System.Drawing.Imaging.ImageFormat.Png); }
+                    InfoTests.Preview(previewPath);
                 }
                 using (var settingsForm = new SettingsForm(new Settings()))
                 using (var bitmap = new Bitmap(settingsForm.Width, settingsForm.Height))

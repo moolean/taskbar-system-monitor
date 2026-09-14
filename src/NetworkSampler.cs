@@ -34,6 +34,7 @@ namespace TaskbarSystemMonitor
             }
             previousRx = stats.BytesReceived; previousTx = stats.BytesSent; previousTime = now; previousId = chosen.Id;
             snapshot.NetworkName = chosen.Name;
+            snapshot.LocalIp = string.Join(" / ", chosen.GetIPProperties().UnicastAddresses.Where(x => x.Address.AddressFamily == System.Net.Sockets.AddressFamily.InterNetwork).Select(x => x.Address.ToString()).ToArray());
         }
         internal static double? Rate(long before, long after, double seconds)
         {

@@ -13,6 +13,8 @@ namespace TaskbarSystemMonitor
         internal double? RxKbps, TxKbps;
         internal string Battery = "—", NetworkName = "未连接";
         internal DateTime Time = DateTime.Now;
+        internal string LocalIp = "—";
+        internal BriefingData Briefing = new BriefingData();
         internal string CpuText { get { return Cpu.HasValue ? Cpu.Value.ToString("0", System.Globalization.CultureInfo.InvariantCulture) + "%" : "—"; } }
         internal string MemoryText { get { return Memory.ToString("0", System.Globalization.CultureInfo.InvariantCulture) + "%"; } }
         internal string MemoryDetail { get { return string.Format("{0:0.0} / {1:0.0} GiB", UsedBytes / 1073741824.0, TotalBytes / 1073741824.0); } }
@@ -26,7 +28,11 @@ namespace TaskbarSystemMonitor
                 case "Download": return Speed(RxKbps);
                 case "Upload": return Speed(TxKbps);
                 case "Battery": return Battery;
-                case "Clock": return Time.ToString("HH:mm:ss");
+                case "Clock": return Time.ToString("MM/dd ddd HH:mm");
+                case "Codex": return Briefing.Codex.Short;
+                case "Calendar": return Briefing.Calendar.Short;
+                case "Ip": return string.IsNullOrEmpty(Briefing.Location.Short) ? LocalIp : Briefing.Location.Short;
+                case "Tracks": return Briefing.WorkSummary;
                 default: return "—";
             }
         }

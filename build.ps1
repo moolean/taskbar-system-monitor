@@ -41,7 +41,9 @@ $arguments = @(
     '/reference:System.Core.dll',
     '/reference:System.Drawing.dll',
     '/reference:System.Windows.Forms.dll',
-    '/reference:System.Xml.Linq.dll'
+    '/reference:System.Xml.Linq.dll',
+    '/reference:System.Web.Extensions.dll',
+    '/reference:System.Security.dll'
 )
 
 $arguments += $sourceFiles

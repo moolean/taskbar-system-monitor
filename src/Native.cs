@@ -68,5 +68,7 @@ namespace TaskbarSystemMonitor
         internal static extern bool SetWindowPos(IntPtr window, IntPtr after, int x, int y, int width, int height, uint flags);
         [DllImport("user32.dll")]
         internal static extern bool DestroyIcon(IntPtr icon);
+        [DllImport("dwmapi.dll")]
+        internal static extern int DwmGetColorizationColor(out uint color, [MarshalAs(UnmanagedType.Bool)] out bool opaque);
     }
 }
