@@ -22,8 +22,11 @@ jobs:
           $process = Start-Process `
             -FilePath .\dist\TaskbarSystemMonitor.exe `
             -ArgumentList '--self-test' `
-            -Wait `
+            -WindowStyle Hidden `
             -PassThru
+          if (-not $process.WaitForExit(30000)) {
+            throw 'Self-test timed out.'
+          }
           if ($process.ExitCode -ne 0) {
             throw "Self-test failed with exit code $($process.ExitCode)"
           }
