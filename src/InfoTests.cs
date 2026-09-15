@@ -2,6 +2,7 @@ using System;
 using System.Drawing;
 using System.IO;
 using System.Linq;
+using System.Xml.Linq;
 
 namespace TaskbarSystemMonitor
 {
@@ -16,12 +17,14 @@ namespace TaskbarSystemMonitor
             string path = Path.Combine(Path.GetTempPath(), "briefing-test-" + Guid.NewGuid().ToString("N") + ".xml");
             try
             {
-                var settings = new Settings { CalendarSecret = secret, Accent = "Plum", GeoEnabled = false };
+                var settings = new Settings { CalendarSecret = secret, Accent = "Plum", GeoEnabled = false, AlwaysOnTop = true };
                 settings.WorkItems.Add(new WorkItem { Title = "Test project", Status = "阻塞", Progress = 67, Notes = "Line 1\r\nLine 2", Link = "https://example.com" });
                 settings.Save(path); var loaded = Settings.Load(path);
                 Require(loaded.WorkItems.Count == 1 && loaded.WorkItems[0].Progress == 67 && loaded.WorkItems[0].Notes.Contains("Line 2") && loaded.Accent == "Plum" && !loaded.GeoEnabled && loaded.CalendarSecret == secret, "Work and connection persistence");
                 var copy = loaded.Copy(); copy.WorkItems[0].Title = "changed"; Require(loaded.WorkItems[0].Title != "changed", "Isolated settings edits");
                 Require(!File.ReadAllText(path).Contains("test-password-not-real"), "No plaintext secret in settings");
+                Require(loaded.AlwaysOnTop && !new Settings().AlwaysOnTop, "Topmost opt-in persistence and disabled default");
+                loaded.AlwaysOnTop = false; loaded.Save(path); Require(!Settings.Load(path).AlwaysOnTop, "Topmost disabled survives restart");
             }
             finally { if (File.Exists(path)) File.Delete(path); }
             string calendar = "BEGIN:VCALENDAR\r\nBEGIN:VEVENT\r\nUID:one\r\nSUMMARY:Weekly "+"\r\n review\r\nDTSTART;TZID=Asia/Shanghai:20260914T170000\r\nDTEND:20260914T100000Z\r\nDESCRIPTION:one\\ntwo\\,three\r\nEND:VEVENT\r\nBEGIN:VEVENT\r\nUID:cancelled\r\nSTATUS:CANCELLED\r\nDTSTART:20260914T170000Z\r\nEND:VEVENT\r\nEND:VCALENDAR";
@@ -32,6 +35,8 @@ namespace TaskbarSystemMonitor
             bool blocked = false; try { CalendarSource.SameOrigin(new Uri("https://caldav.feishu.cn/"), "https://example.com/leak"); } catch (InvalidOperationException) { blocked = true; } Require(blocked, "Cross-origin credential protection");
             blocked = false; try { CalendarSource.ParseIcal(calendar.Replace("UID:one", "UID:one\r\nRRULE:FREQ=WEEKLY")); } catch (InvalidOperationException) { blocked = true; } Require(blocked, "Unexpanded recurrence is not silently ignored");
             Require(!ModulePopup.IsWebLink("file:///C:/Windows/System32/cmd.exe") && !ModulePopup.IsWebLink("https://user:password@example.com") && ModulePopup.IsWebLink("https://example.com/a"), "Safe links");
+            TestCalendarConnection(secret);
+            using (var settingsUi = new SettingsForm(new Settings { FirstRun = false })) Require(!settingsUi.Value.AlwaysOnTop, "Settings constructs with non-topmost default");
             var sample = Demo();
             using (var bitmap = new Bitmap(2048, 24)) using (var g = Graphics.FromImage(bitmap))
             {
@@ -39,6 +44,42 @@ namespace TaskbarSystemMonitor
                 Require(hidden == 0 && cells.Last().Bounds.Right >= 2048 - 40 && cells.First().Bounds.Left <= 16, "Full width is used");
                 var meeting = cells.First(x => x.Id == "Calendar"); Require(meeting.Bounds.Width > 230, "Meeting expands into unused space");
             }
+        }
+        private static void TestCalendarConnection(string secret)
+        {
+            Require(CalendarSource.ValidateUrl(" caldav.feishu.cn ").AbsoluteUri == "https://caldav.feishu.cn/", "Bare CalDAV host normalization");
+            Require(CalendarSource.SameOrigin(new Uri("https://example.com/dav"), "/dav/").AbsolutePath == "/dav/", "Same-origin redirect target");
+            var config = new Settings { CalendarUrl = "https://example.com/", CalendarUser = "test-user", CalendarSecret = secret };
+            int requests = 0;
+            var values = CalendarSource.Read(config, null, delegate(Uri uri, string method, string body, string auth, string depth)
+            {
+                requests++;
+                Require(auth.StartsWith("Basic ") && uri.Host == "example.com", "Credentials remain with calendar origin");
+                string response;
+                if (requests == 1) response = "<d:response><d:propstat><d:prop><d:current-user-principal><d:href>/principals/u/</d:href></d:current-user-principal></d:prop></d:propstat></d:response>";
+                else if (requests == 2) response = "<d:response><d:propstat><d:prop><c:calendar-home-set><d:href>calendars/</d:href></c:calendar-home-set></d:prop></d:propstat></d:response>";
+                else if (requests == 3)
+                {
+                    Require(uri.AbsolutePath == "/principals/u/calendars/", "Calendar home relative to principal");
+                    response = "<d:response><d:href>main/</d:href><d:propstat><d:prop><d:resourcetype><c:calendar/></d:resourcetype></d:prop></d:propstat></d:response>";
+                }
+                else
+                {
+                    Require(method == "REPORT" && uri.AbsolutePath == "/principals/u/calendars/main/", "Calendar relative to home");
+                    string when = DateTime.UtcNow.AddHours(2).ToString("yyyyMMdd'T'HHmmss'Z'");
+                    response = "<d:response><d:propstat><d:prop><c:calendar-data>BEGIN:VCALENDAR\nBEGIN:VEVENT\nUID:mock\nDTSTART:" + when + "\nDURATION:PT30M\nSUMMARY:Test only\nEND:VEVENT\nEND:VCALENDAR</c:calendar-data></d:prop><d:status>HTTP/1.1 200 OK</d:status></d:propstat></d:response>";
+                }
+                return "<d:multistatus xmlns:d='DAV:' xmlns:c='urn:ietf:params:xml:ns:caldav'>" + response + "</d:multistatus>";
+            });
+            Require(requests == 4 && values.Count == 1, "Read-only mocked CalDAV discovery and REPORT");
+            bool explained = false;
+            try { CalendarSource.Read(config, null, delegate { throw new InvalidOperationException(CalendarSource.HttpFailure(405)); }); }
+            catch (InvalidOperationException error) { explained = error.Message.Contains("PROPFIND") && error.Message.Contains("405") && error.Message.Contains("不等同于密码错误"); }
+            Require(explained, "Calendar error includes phase and protocol cause");
+            bool denied = false;
+            try { CalendarSource.CalendarData(XDocument.Parse("<d:multistatus xmlns:d='DAV:'><d:response><d:status>HTTP/1.1 403 Forbidden</d:status></d:response></d:multistatus>")).ToList(); }
+            catch (InvalidOperationException error) { denied = error.Message.Contains("403"); }
+            Require(denied, "DAV inner errors are not empty success");
         }
         internal static Snapshot Demo()
         {

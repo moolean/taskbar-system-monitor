@@ -17,7 +17,13 @@ Copy-Item -LiteralPath $sourceExe -Destination $stagedExe -Force
 if (Test-Path -LiteralPath $installedExe) {
     Copy-Item -LiteralPath $installedExe -Destination (Join-Path $installDirectory 'TaskbarSystemMonitor.previous.exe') -Force
 }
-Move-Item -LiteralPath $stagedExe -Destination $installedExe -Force
+# File.Replace / Move-Item can fail through MSIX LocalAppData virtualization.
+# The process has exited and an upgrade backup exists; copy and verify instead.
+Copy-Item -LiteralPath $stagedExe -Destination $installedExe -Force
+if ((Get-FileHash -LiteralPath $stagedExe -Algorithm SHA256).Hash -ne (Get-FileHash -LiteralPath $installedExe -Algorithm SHA256).Hash) {
+    throw 'Installed executable failed integrity verification. The previous EXE backup is retained.'
+}
+Remove-Item -LiteralPath $stagedExe -Force
 
 $runKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run'
 New-Item -Path $runKey -Force | Out-Null

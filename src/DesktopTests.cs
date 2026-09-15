@@ -35,6 +35,8 @@ namespace TaskbarSystemMonitor
                             case 1:
                                 initialBounds = dock.Bounds;
                                 VerifyReservation(dock, baseline, settings.Height);
+                                Require(!Native.IsTopmost(dock.Handle), "Default bar must not be topmost");
+                                report.AppendLine("PASS default non-topmost window style");
                                 report.AppendLine("PASS show / reserve: " + dock.Bounds);
                                 maximized.Show(); maximized.WindowState = FormWindowState.Maximized;
                                 break;
@@ -45,6 +47,17 @@ namespace TaskbarSystemMonitor
                                 for (int i = 0; i < 50; i++) dock.PositionBar();
                                 Require(dock.Bounds == initialBounds && dock.LayoutChanges == changes, "Repeated positioning drifts");
                                 report.AppendLine("PASS 50 repeated positioning calls / no drift");
+                                maximized.Hide(); dock.SetFullscreenState(false);
+                                settings.AlwaysOnTop = true; dock.Apply(settings);
+                                Require(Native.IsTopmost(dock.Handle), "Topmost switch did not enable");
+                                dock.SetFullscreenState(true);
+                                Require(!Native.IsTopmost(dock.Handle), "Fullscreen did not yield");
+                                dock.SetFullscreenState(false);
+                                Require(Native.IsTopmost(dock.Handle), "Topmost was not restored after fullscreen");
+                                settings.AlwaysOnTop = false; dock.Apply(settings);
+                                dock.SetFullscreenState(true); dock.SetFullscreenState(false); dock.PositionBar();
+                                Require(!Native.IsTopmost(dock.Handle), "Non-topmost preference was lost after fullscreen/reposition");
+                                report.AppendLine("PASS topmost toggle / fullscreen yield / non-topmost restoration");
                                 maximized.Hide(); settings.Height = 32; dock.Apply(settings);
                                 break;
                             case 3:

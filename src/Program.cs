@@ -6,8 +6,8 @@ using System.Windows.Forms;
 [assembly: System.Reflection.AssemblyTitle("Taskbar System Monitor")]
 [assembly: System.Reflection.AssemblyCompany("moolean")]
 [assembly: System.Reflection.AssemblyProduct("Taskbar System Monitor")]
-[assembly: System.Reflection.AssemblyVersion("3.0.0.0")]
-[assembly: System.Reflection.AssemblyFileVersion("3.0.0.0")]
+[assembly: System.Reflection.AssemblyVersion("3.1.0.0")]
+[assembly: System.Reflection.AssemblyFileVersion("3.1.0.0")]
 
 namespace TaskbarSystemMonitor
 {
@@ -36,6 +36,36 @@ namespace TaskbarSystemMonitor
                 catch (Exception error) { File.WriteAllText(sourceReport.Substring(13), InfoHub.SafeError(error)); return 22; }
             }
             string desktopReport = Array.Find(args, x => x.StartsWith("--appbar-test=", StringComparison.OrdinalIgnoreCase));
+            string calendarReport = Array.Find(args, x => x.StartsWith("--calendar-test=", StringComparison.OrdinalIgnoreCase));
+            if (calendarReport != null)
+            {
+                var report = new System.Collections.Generic.List<string>();
+                try
+                {
+                    var config = Settings.Load(Settings.DefaultPath);
+                    report.Add("Configuration file: " + Settings.DefaultPath);
+                    if (config.CalendarUser.Length == 0 || config.CalendarSecret.Length == 0) throw new InvalidOperationException("未配置 CalDAV 专用账户和密码。");
+                    var meetings = CalendarSource.Read(config, delegate(string step) { report.Add(step); });
+                    report.Add("PASS: read-only calendar sync; upcoming event count = " + meetings.Count);
+                    File.WriteAllLines(calendarReport.Substring(16), report); return 0;
+                }
+                catch (Exception error) { report.Add("FAIL: " + error.GetType().Name + ": " + InfoHub.SafeError(error)); File.WriteAllLines(calendarReport.Substring(16), report); return 23; }
+            }
+            string settingsReport = Array.Find(args, x => x.StartsWith("--settings-test=", StringComparison.OrdinalIgnoreCase));
+            if (settingsReport != null)
+            {
+                try
+                {
+                    using (var form = new SettingsForm(new Settings { FirstRun = false }))
+                    {
+                        File.WriteAllText(settingsReport.Substring(16), "Settings constructed; waiting for the dialog to close.");
+                        form.ShowDialog();
+                        File.WriteAllText(settingsReport.Substring(16), "PASS: settings dialog opened and closed without saving real configuration.");
+                    }
+                    return 0;
+                }
+                catch (Exception error) { File.WriteAllText(settingsReport.Substring(16), error.ToString()); return 24; }
+            }
 
             bool created;
             using (var mutex = new Mutex(true, MutexName, out created))

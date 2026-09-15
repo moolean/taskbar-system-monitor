@@ -12,6 +12,7 @@ namespace TaskbarSystemMonitor
     internal sealed class Settings
     {
         internal bool Dock = true, SoftBackground = true, FirstRun = true, FillBar = true, TintTaskbar = true, GeoEnabled = false;
+        internal bool AlwaysOnTop = false;
         internal int Height = 24, FontSize = 9, Interval = 1000;
         internal string Theme = "Auto", Alignment = "Right", NetworkId = "", Accent = "System", CodexPath = "";
         internal string CalendarUrl = "https://caldav.feishu.cn/", CalendarUser = "", CalendarSecret = "";
@@ -42,6 +43,7 @@ namespace TaskbarSystemMonitor
             {
                 XElement root = XElement.Load(path);
                 s.Dock = (bool?)root.Attribute("dock") ?? true;
+                s.AlwaysOnTop = (bool?)root.Attribute("alwaysOnTop") ?? false;
                 s.FirstRun = (bool?)root.Attribute("firstRun") ?? true;
                 s.SoftBackground = (bool?)root.Attribute("soft") ?? true;
                 s.Height = (int?)root.Attribute("height") ?? 24;
@@ -71,7 +73,7 @@ namespace TaskbarSystemMonitor
         {
             Validate();
             Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(path)));
-            var root = new XElement("settings", new XAttribute("version", 3), new XAttribute("dock", Dock), new XAttribute("firstRun", FirstRun), new XAttribute("soft", SoftBackground),
+            var root = new XElement("settings", new XAttribute("version", 3), new XAttribute("dock", Dock), new XAttribute("alwaysOnTop", AlwaysOnTop), new XAttribute("firstRun", FirstRun), new XAttribute("soft", SoftBackground),
                 new XAttribute("height", Height), new XAttribute("fontSize", FontSize), new XAttribute("interval", Interval),
                 new XAttribute("theme", Theme), new XAttribute("alignment", Alignment), new XAttribute("network", NetworkId),
                 new XAttribute("fillBar", FillBar), new XAttribute("tintTaskbar", TintTaskbar), new XAttribute("geoEnabled", GeoEnabled), new XAttribute("accent", Accent),

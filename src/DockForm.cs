@@ -29,7 +29,7 @@ namespace TaskbarSystemMonitor
             ShowInTaskbar = false;
             AutoScaleMode = AutoScaleMode.None;
             StartPosition = FormStartPosition.Manual;
-            TopMost = true;
+            TopMost = settings.AlwaysOnTop;
             DoubleBuffered = true;
             MinimumSize = Size.Empty;
             Size = new Size(1, 1);
@@ -46,6 +46,7 @@ namespace TaskbarSystemMonitor
         internal void Apply(Settings value)
         {
             settings = value; palette = Palette.Current(settings);
+            ApplyZOrder(false);
             if (Visible) PositionBar();
             Invalidate();
         }
@@ -98,17 +99,27 @@ namespace TaskbarSystemMonitor
                 Rectangle target = bar.Bounds.Rectangle;
                 // A hidden-then-shown bar keeps its old Bounds but loses its Shell
                 // reservation. Only skip SETPOS while that reservation still exists.
-                if (reservationSet && target == Bounds) return;
+                if (reservationSet && target == Bounds) { ApplyZOrder(false); return; }
                 Native.SHAppBarMessage(Native.SetPos, ref bar);
                 reservationSet = true;
                 target = bar.Bounds.Rectangle;
                 if (target.Width <= 0 || target.Height <= 0) throw new InvalidOperationException("Windows 返回了无效的资源栏位置。");
                 Bounds = target;
-                Native.SetWindowPos(Handle, fullscreen ? Native.Bottom : Native.Topmost, Left, Top, Width, Height, Native.NoActivate);
+                Native.SetWindowPos(Handle, IntPtr.Zero, Left, Top, Width, Height, Native.NoActivate | Native.NoZOrder);
+                ApplyZOrder(false);
                 LayoutChanges++;
             }
             finally { positioning = false; }
         }
+        private void ApplyZOrder(bool force)
+        {
+            if (!IsHandleCreated || disposing) return;
+            bool desired = settings.AlwaysOnTop && !fullscreen;
+            if (!force && Native.IsTopmost(Handle) == desired) return;
+            TopMost = desired;
+            Native.SetWindowPos(Handle, fullscreen ? Native.Bottom : desired ? Native.Topmost : Native.NotTopmost, 0, 0, 0, 0, Native.NoActivate | Native.NoMove | Native.NoSize);
+        }
+        internal void SetFullscreenState(bool active) { fullscreen = active; ApplyZOrder(true); }
         private void QueuePosition()
         {
             if (queued || positioning || disposing || !IsHandleCreated) return;
@@ -128,8 +139,7 @@ namespace TaskbarSystemMonitor
                 if (m.WParam.ToInt32() == 1) QueuePosition();
                 if (m.WParam.ToInt32() == 2)
                 {
-                    fullscreen = m.LParam != IntPtr.Zero;
-                    Native.SetWindowPos(Handle, fullscreen ? Native.Bottom : Native.Topmost, 0, 0, 0, 0, Native.NoActivate | Native.NoMove | Native.NoSize);
+                    SetFullscreenState(m.LParam != IntPtr.Zero);
                 }
             }
             if (m.Msg == taskbarCreated && Visible)
@@ -146,6 +156,7 @@ namespace TaskbarSystemMonitor
             if (registered && !positioning && !disposing && (m.Msg == 0x47 || m.Msg == 6))
             {
                 var bar = Native.BarData(Handle);
+                if (m.Msg == 6) bar.Parameter = new IntPtr((m.WParam.ToInt64() & 0xffff) == 0 ? 0 : 1);
                 Native.SHAppBarMessage(m.Msg == 6 ? Native.ActivateBar : Native.WindowPosChanged, ref bar);
             }
         }

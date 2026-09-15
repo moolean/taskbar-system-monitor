@@ -8,8 +8,11 @@ namespace TaskbarSystemMonitor
     {
         internal const uint NewBar = 0, RemoveBar = 1, QueryPos = 2, SetPos = 3, ActivateBar = 6, WindowPosChanged = 9;
         internal const uint LeftEdge = 0, TopEdge = 1, RightEdge = 2, BottomEdge = 3;
-        internal static readonly IntPtr Topmost = new IntPtr(-1), Bottom = new IntPtr(1);
-        internal const uint NoActivate = 0x10, NoMove = 2, NoSize = 1;
+        internal static readonly IntPtr Topmost = new IntPtr(-1), NotTopmost = new IntPtr(-2), Bottom = new IntPtr(1);
+        internal const uint NoActivate = 0x10, NoMove = 2, NoSize = 1, NoZOrder = 4;
+        [DllImport("user32.dll", EntryPoint = "GetWindowLongW")]
+        internal static extern int GetWindowLong(IntPtr window, int index);
+        internal static bool IsTopmost(IntPtr window) { return (GetWindowLong(window, -20) & 8) != 0; }
 
         [StructLayout(LayoutKind.Sequential)]
         internal struct Rect

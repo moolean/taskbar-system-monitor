@@ -51,7 +51,11 @@ $arguments += $sourceFiles
 try {
     & $compiler $arguments
     if ($LASTEXITCODE -ne 0) { throw "Build failed with exit code $LASTEXITCODE" }
-    Move-Item -LiteralPath $stagedOutput -Destination $outputFile -Force
+    if (Test-Path -LiteralPath $outputFile) {
+        [System.IO.File]::Replace($stagedOutput, $outputFile, [System.Management.Automation.Language.NullString]::Value)
+    } else {
+        [System.IO.File]::Move($stagedOutput, $outputFile)
+    }
 } finally {
     if (Test-Path -LiteralPath $stagedOutput) { Remove-Item -LiteralPath $stagedOutput -Force }
 }

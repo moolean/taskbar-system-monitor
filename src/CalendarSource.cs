@@ -13,6 +13,8 @@ namespace TaskbarSystemMonitor
     internal static class SafeHttp
     {
         internal static string Read(Uri uri, string method, string body = null, string authorization = null, string depth = null)
+        { return Read(uri, method, body, authorization, depth, 0); }
+        private static string Read(Uri uri, string method, string body, string authorization, string depth, int redirects)
         {
             if (uri.Scheme != "https" || uri.UserInfo.Length > 0) throw new InvalidOperationException("只允许 HTTPS 地址，不能把密码放入 URL。");
             var request = (HttpWebRequest)WebRequest.Create(uri);
@@ -27,7 +29,17 @@ namespace TaskbarSystemMonitor
             }
             using (var response = (HttpWebResponse)request.GetResponse())
             {
-                if ((int)response.StatusCode >= 300) throw new InvalidOperationException("数据源要求跳转，请填写其最终 HTTPS 地址。");
+                int code = (int)response.StatusCode;
+                if (code == 301 || code == 302 || code == 307 || code == 308)
+                {
+                    if (redirects >= 3 || string.IsNullOrWhiteSpace(response.Headers["Location"])) throw new InvalidOperationException("日历服务器跳转次数过多或缺少目标地址。");
+                    Uri destination = CalendarSource.SameOrigin(uri, response.Headers["Location"]);
+                    // CalDAV endpoints often redirect to a trailing-slash URL.
+                    // Preserve DAV method/body, and never forward credentials across origins.
+                    response.Close();
+                    return Read(destination, method, body, authorization, depth, redirects + 1);
+                }
+                if (code >= 300) throw new InvalidOperationException("数据源返回了不支持的跳转，请填写最终 HTTPS 地址。");
                 using (var reader = new StreamReader(response.GetResponseStream(), Encoding.UTF8))
                 {
                     var text = new StringBuilder(); var buffer = new char[4096]; int count;
@@ -41,28 +53,70 @@ namespace TaskbarSystemMonitor
 
     internal static class CalendarSource
     {
+        internal delegate string Transport(Uri uri, string method, string body, string authorization, string depth);
         private static readonly XNamespace Dav = "DAV:", Cal = "urn:ietf:params:xml:ns:caldav";
-        internal static List<Meeting> Read(Settings settings)
+        internal static List<Meeting> Read(Settings settings, Action<string> progress = null)
+        { return Read(settings, progress, delegate(Uri uri, string method, string body, string authorization, string depth) { return SafeHttp.Read(uri, method, body, authorization, depth); }); }
+        internal static List<Meeting> Read(Settings settings, Action<string> progress, Transport transport)
         {
+            string phase = "检查本地连接配置";
+            try { return ReadCore(settings, delegate(string value) { phase = value; if (progress != null) progress(value); }, transport); }
+            catch (Exception error) { throw new InvalidOperationException(phase + "失败：" + Explain(error)); }
+        }
+        internal static string Explain(Exception error)
+        {
+            var web = error as WebException;
+            if (web != null)
+            {
+                var response = web.Response as HttpWebResponse;
+                if (response != null) { int code = (int)response.StatusCode; response.Dispose(); return HttpFailure(code); }
+                return web.Status == WebExceptionStatus.Timeout ? "请求超时，请检查网络或稍后重试。" : "网络连接失败，请检查服务器地址、网络和证书。";
+            }
+            if (error is System.Security.Cryptography.CryptographicException || error is FormatException)
+                return "本机保存的凭据或日历格式无法解析；请重新填写专用密码并测试。";
+            if (error is XmlException) return "服务器没有返回有效的 CalDAV XML；可能地址不正确或服务暂不可用。";
+            return error is InvalidOperationException ? error.Message : "日历数据暂时无法处理；不是已确认的密码错误。";
+        }
+        internal static string HttpFailure(int code)
+        {
+            if (code == 401) return "HTTP 401，服务器拒绝认证。请核对同一次生成的 CalDAV 用户名和专用密码；旧设备凭据也可能已失效。";
+            if (code == 403) return "HTTP 403，服务器拒绝访问。可能是企业同步权限或日历权限限制，不等同于密码错误。";
+            if (code == 404) return "HTTP 404，日历地址不存在，请使用飞书生成的完整服务器地址。";
+            if (code == 400 || code == 405 || code == 501) return "HTTP " + code + "，服务器不接受该 CalDAV 请求，属于协议兼容或地址问题，不等同于密码错误。";
+            if (code == 429) return "HTTP 429，请求过于频繁，请稍后重试。";
+            return "HTTP " + code + "，日历服务器暂时无法完成请求。";
+        }
+        private static List<Meeting> ReadCore(Settings settings, Action<string> progress, Transport transport)
+        {
+            progress("检查本地连接配置");
+            if (string.IsNullOrWhiteSpace(settings.CalendarUser) || string.IsNullOrEmpty(settings.CalendarSecret)) throw new InvalidOperationException("未保存 CalDAV 专用用户名或密码，请在数据连接页填写、测试并保存。");
             Uri root = ValidateUrl(settings.CalendarUrl);
             string auth = "Basic " + Convert.ToBase64String(Encoding.UTF8.GetBytes(settings.CalendarUser + ":" + LocalSecret.Open(settings.CalendarSecret)));
             string properties = "<d:current-user-principal/><c:calendar-home-set/><d:resourcetype/>";
-            XDocument first = Properties(root, auth, properties, "0");
+            progress("发现账户 / PROPFIND");
+            XDocument first = Properties(root, auth, properties, "0", transport);
             string home = Href(first, Cal + "calendar-home-set");
             if (home == null)
             {
                 string principal = Href(first, Dav + "current-user-principal");
-                if (principal != null) home = Href(Properties(SameOrigin(root, principal), auth, properties, "0"), Cal + "calendar-home-set");
+                if (principal != null)
+                {
+                    progress("发现日历目录 / PROPFIND");
+                    Uri principalUri = SameOrigin(root, principal);
+                    home = Href(Properties(principalUri, auth, properties, "0", transport), Cal + "calendar-home-set");
+                    if (home != null) home = SameOrigin(root, new Uri(principalUri, home).AbsoluteUri).AbsoluteUri;
+                }
             }
             var calendars = new List<Uri>();
             if (first.Descendants(Cal + "calendar").Any()) calendars.Add(root);
             else
             {
                 Uri homeUri = home == null ? root : SameOrigin(root, home);
-                XDocument listing = Properties(homeUri, auth, "<d:resourcetype/><d:displayname/>", "1");
+                progress("列出日历 / PROPFIND");
+                XDocument listing = Properties(homeUri, auth, "<d:resourcetype/><d:displayname/>", "1", transport);
                 foreach (var response in listing.Descendants(Dav + "response"))
                     if (response.Descendants(Cal + "calendar").Any() && response.Element(Dav + "href") != null)
-                        calendars.Add(SameOrigin(root, (string)response.Element(Dav + "href")));
+                        calendars.Add(SameOrigin(root, new Uri(homeUri, (string)response.Element(Dav + "href")).AbsoluteUri));
             }
             if (calendars.Count == 0) throw new InvalidOperationException("未找到可读日历，请检查 CalDAV 服务器地址与同步权限。");
             if (calendars.Count > 20) throw new InvalidOperationException("日历数量超过 20，请填写具体的 CalDAV 日历地址。");
@@ -72,13 +126,17 @@ namespace TaskbarSystemMonitor
             var meetings = new List<Meeting>();
             foreach (Uri calendar in calendars)
             {
-                var response = Xml(SafeHttp.Read(calendar, "REPORT", query, auth, "1"));
-                foreach (var data in response.Descendants(Cal + "calendar-data")) meetings.AddRange(ParseIcal(data.Value));
+                progress("读取日程 / REPORT");
+                var response = Xml(transport(calendar, "REPORT", query, auth, "1"));
+                progress("解析日程");
+                foreach (var data in CalendarData(response)) meetings.AddRange(ParseIcal(data));
             }
             return meetings.Where(x => x.End > now && x.Start < now.AddDays(14)).GroupBy(x => x.Id + "|" + x.Start.ToString("o")).Select(x => x.First()).OrderBy(x => x.Start).Take(100).ToList();
         }
         internal static Uri ValidateUrl(string value)
         {
+            value = (value ?? "").Trim();
+            if (value.Length > 0 && !value.Contains("://")) value = "https://" + value;
             Uri uri;
             if (!Uri.TryCreate(value, UriKind.Absolute, out uri) || uri.Scheme != "https" || uri.UserInfo.Length > 0 || uri.Query.Length > 0 || uri.Fragment.Length > 0)
                 throw new InvalidOperationException("CalDAV 需要不含密码、查询参数的 HTTPS 服务器地址。");
@@ -91,8 +149,27 @@ namespace TaskbarSystemMonitor
                 throw new InvalidOperationException("CalDAV 返回了其他服务器的地址，已阻止发送凭据。");
             return uri;
         }
-        private static XDocument Properties(Uri uri, string auth, string properties, string depth)
-        { return Xml(SafeHttp.Read(uri, "PROPFIND", "<d:propfind xmlns:d='DAV:' xmlns:c='urn:ietf:params:xml:ns:caldav'><d:prop>" + properties + "</d:prop></d:propfind>", auth, depth)); }
+        private static XDocument Properties(Uri uri, string auth, string properties, string depth, Transport transport)
+        { return Xml(transport(uri, "PROPFIND", "<d:propfind xmlns:d='DAV:' xmlns:c='urn:ietf:params:xml:ns:caldav'><d:prop>" + properties + "</d:prop></d:propfind>", auth, depth)); }
+        internal static IEnumerable<string> CalendarData(XDocument document)
+        {
+            if (document.Root == null || document.Root.Name != Dav + "multistatus") throw new InvalidOperationException("日历服务器没有返回 DAV multistatus 数据。");
+            var output = new List<string>();
+            foreach (var resource in document.Root.Elements(Dav + "response"))
+            {
+                string status = (string)resource.Element(Dav + "status");
+                if (status != null && !status.Contains(" 200 ")) throw new InvalidOperationException("日历条目读取失败：" + HttpFailure(StatusCode(status)));
+                foreach (var property in resource.Elements(Dav + "propstat"))
+                {
+                    var entries = property.Descendants(Cal + "calendar-data").ToList();
+                    string code = (string)property.Element(Dav + "status") ?? "";
+                    if (!code.Contains(" 200 ") && entries.Count > 0) throw new InvalidOperationException("日历内容读取失败：" + HttpFailure(StatusCode(code)));
+                    foreach (var entry in entries) output.Add(entry.Value);
+                }
+            }
+            return output;
+        }
+        private static int StatusCode(string value) { int code; string[] parts = value.Split(' '); return parts.Length > 1 && int.TryParse(parts[1], out code) ? code : 0; }
         private static string Href(XDocument doc, XName property) { var node = doc.Descendants(property).Elements(Dav + "href").FirstOrDefault(); return node == null ? null : node.Value; }
         private static XDocument Xml(string text)
         {
