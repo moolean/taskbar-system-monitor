@@ -44,7 +44,7 @@ namespace TaskbarSystemMonitor
                 item.Click += delegate { SelectPage(id); }; navigation[id]=item;
             }
             SettingsUi.Label(sidebar,"本机优先 · 只读连接",20,632,150,24,8.5f,true);
-            SettingsUi.Label(sidebar,"VERSION 3.1",20,658,150,22,8,true);
+            SettingsUi.Label(sidebar,"VERSION 3.1.1",20,658,150,22,8,true);
 
             var main = new Panel { Dock = DockStyle.Fill }; Controls.Add(main); main.BringToFront();
             var header = new Panel { Dock = DockStyle.Top, Height = 104 }; main.Controls.Add(header);

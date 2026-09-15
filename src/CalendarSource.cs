@@ -70,7 +70,16 @@ namespace TaskbarSystemMonitor
             {
                 var response = web.Response as HttpWebResponse;
                 if (response != null) { int code = (int)response.StatusCode; response.Dispose(); return HttpFailure(code); }
-                return web.Status == WebExceptionStatus.Timeout ? "请求超时，请检查网络或稍后重试。" : "网络连接失败，请检查服务器地址、网络和证书。";
+                switch (web.Status)
+                {
+                    case WebExceptionStatus.SecureChannelFailure: return "TLS 握手失败（SecureChannelFailure），尚未完成密码认证。请确认正在运行最新版；不要关闭证书校验。";
+                    case WebExceptionStatus.TrustFailure: return "服务器证书验证失败（TrustFailure）。请检查系统时间及企业代理证书；不要跳过证书验证。";
+                    case WebExceptionStatus.NameResolutionFailure: return "服务器域名无法解析（NameResolutionFailure），请检查地址与 DNS。";
+                    case WebExceptionStatus.ProxyNameResolutionFailure: return "系统代理地址无法解析（ProxyNameResolutionFailure），请检查代理配置。";
+                    case WebExceptionStatus.ConnectFailure: return "无法连接服务器或系统代理（ConnectFailure），请检查网络连通性。";
+                    case WebExceptionStatus.Timeout: return "请求超时（Timeout），请检查网络或稍后重试。";
+                    default: return "网络连接中断（" + web.Status + "），尚不能判断密码是否正确。";
+                }
             }
             if (error is System.Security.Cryptography.CryptographicException || error is FormatException)
                 return "本机保存的凭据或日历格式无法解析；请重新填写专用密码并测试。";

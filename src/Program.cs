@@ -6,8 +6,8 @@ using System.Windows.Forms;
 [assembly: System.Reflection.AssemblyTitle("Taskbar System Monitor")]
 [assembly: System.Reflection.AssemblyCompany("moolean")]
 [assembly: System.Reflection.AssemblyProduct("Taskbar System Monitor")]
-[assembly: System.Reflection.AssemblyVersion("3.1.0.0")]
-[assembly: System.Reflection.AssemblyFileVersion("3.1.0.0")]
+[assembly: System.Reflection.AssemblyVersion("3.1.1.0")]
+[assembly: System.Reflection.AssemblyFileVersion("3.1.1.0")]
 
 namespace TaskbarSystemMonitor
 {

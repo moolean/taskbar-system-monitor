@@ -10,6 +10,12 @@ namespace TaskbarSystemMonitor
     {
         internal static void Run()
         {
+            Require(AppDomain.CurrentDomain.SetupInformation.TargetFrameworkName == ".NETFramework,Version=v4.8", "Published runtime must target .NET Framework 4.8");
+            Require(System.Net.ServicePointManager.SecurityProtocol == System.Net.SecurityProtocolType.SystemDefault, "HTTPS must use OS-default TLS, not legacy SSL3/TLS1.0");
+            Require(System.Net.ServicePointManager.ServerCertificateValidationCallback == null, "Certificate validation must not be bypassed");
+            Require(CalendarSource.Explain(new System.Net.WebException("test only", System.Net.WebExceptionStatus.SecureChannelFailure)).Contains("TLS"), "TLS failure is distinct from password failure");
+            Require(CalendarSource.Explain(new System.Net.WebException("test only", System.Net.WebExceptionStatus.TrustFailure)).Contains("证书"), "Certificate failure is distinct from password failure");
+            Require(CalendarSource.Explain(new System.Net.WebException("test only", System.Net.WebExceptionStatus.NameResolutionFailure)).Contains("DNS"), "DNS failure has an actionable explanation");
             var quota = CodexQuota.Parse(JsonData.Parse("{\"rateLimits\":{\"primary\":{\"usedPercent\":99}},\"rateLimitsByLimitId\":{\"codex\":{\"primary\":{\"usedPercent\":10,\"windowDurationMins\":10080,\"resetsAt\":1789823306},\"secondary\":null}}}"));
             Require(quota.Short == "周剩余 90%" && quota.Available, "Quota interpretation");
             Require(!CodexQuota.Parse(JsonData.Parse("{\"rateLimits\":{\"primary\":null}}" )).Available, "Missing quota is not zero usage");

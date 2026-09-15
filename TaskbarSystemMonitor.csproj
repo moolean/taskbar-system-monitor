@@ -6,6 +6,7 @@
     <RootNamespace>TaskbarSystemMonitor</RootNamespace>
     <AssemblyName>TaskbarSystemMonitor</AssemblyName>
     <GenerateAssemblyInfo>false</GenerateAssemblyInfo>
+    <GenerateTargetFrameworkAttribute>false</GenerateTargetFrameworkAttribute>
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <LangVersion>7.3</LangVersion>
   </PropertyGroup>
