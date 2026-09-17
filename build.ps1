@@ -9,6 +9,9 @@ $sourceFiles = Get-ChildItem -LiteralPath (Join-Path $projectRoot 'src') -Filter
 $manifestFile = Join-Path $projectRoot 'app.manifest'
 $distDirectory = Join-Path $projectRoot 'dist'
 $outputFile = Join-Path $distDirectory 'TaskbarSystemMonitor.exe'
+if (Get-Process TaskbarSystemMonitor -ErrorAction SilentlyContinue | Where-Object { $_.Path -eq $outputFile }) {
+    throw 'The portable build is running. Close it before rebuilding; the installed copy can stay running.'
+}
 
 $compilerCandidates = @(
     (Join-Path $env:WINDIR 'Microsoft.NET\Framework64\v4.0.30319\csc.exe'),
@@ -42,8 +45,8 @@ $arguments = @(
     '/reference:System.Drawing.dll',
     '/reference:System.Windows.Forms.dll',
     '/reference:System.Xml.Linq.dll',
-    '/reference:System.Web.Extensions.dll',
-    '/reference:System.Security.dll'
+    '/reference:System.Web.Extensions.dll'
+    '/reference:Microsoft.CSharp.dll'
 )
 
 $arguments += $sourceFiles

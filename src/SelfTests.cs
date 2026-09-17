@@ -68,7 +68,13 @@ namespace TaskbarSystemMonitor
                 if (history.Cpu.Count != 120 || history.Memory.Count != 120) return 15;
                 return 0;
             }
-            catch (Exception error) { Log.Error(error); return 10; }
+            catch (Exception error)
+            {
+                Log.Error(error);
+                string report = Array.Find(args, x => x.StartsWith("--test-report=", StringComparison.Ordinal));
+                if (report != null) File.WriteAllText(report.Substring(14), error.ToString());
+                return 10;
+            }
         }
         private static void CreateHandles(Control control)
         {

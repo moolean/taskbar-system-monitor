@@ -12,24 +12,9 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Build
+      - name: Build and test (same entry point as local development)
         shell: powershell
-        run: .\build.ps1
-
-      - name: Self-test
-        shell: powershell
-        run: |
-          $process = Start-Process `
-            -FilePath .\dist\TaskbarSystemMonitor.exe `
-            -ArgumentList '--self-test' `
-            -WindowStyle Hidden `
-            -PassThru
-          if (-not $process.WaitForExit(30000)) {
-            throw 'Self-test timed out.'
-          }
-          if ($process.ExitCode -ne 0) {
-            throw "Self-test failed with exit code $($process.ExitCode)"
-          }
+        run: .\test.ps1
 
       - name: Upload executable
         uses: actions/upload-artifact@v4

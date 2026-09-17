@@ -15,11 +15,10 @@ namespace TaskbarSystemMonitor
         internal bool AlwaysOnTop = false;
         internal int Height = 24, FontSize = 9, Interval = 1000;
         internal string Theme = "Auto", Alignment = "Right", NetworkId = "", Accent = "System", CodexPath = "";
-        internal string CalendarUrl = "https://caldav.feishu.cn/", CalendarUser = "", CalendarSecret = "";
         internal List<WorkItem> WorkItems = new List<WorkItem>();
-        internal List<string> Items = new List<string> { "Cpu", "Memory", "Download", "Upload", "Codex", "Calendar", "Ip", "Tracks", "Clock" };
-        internal static readonly string[] MetricIds = { "Cpu", "Memory", "MemoryUsed", "Download", "Upload", "Battery", "Codex", "Calendar", "Ip", "Tracks", "Clock" };
-        internal static readonly string[] MetricNames = { "CPU 使用率", "内存使用率", "已用 / 总内存", "下载速度", "上传速度", "电池电量", "Codex 剩余额度", "飞书下一场会议", "IP / 大致位置", "工作追踪（可展开）", "日期与时间" };
+        internal List<string> Items = new List<string> { "Cpu", "Memory", "Download", "Upload", "Codex", "Ip", "Tracks", "Clock" };
+        internal static readonly string[] MetricIds = { "Cpu", "Memory", "MemoryUsed", "Download", "Upload", "Battery", "Codex", "Ip", "Tracks", "Clock" };
+        internal static readonly string[] MetricNames = { "CPU 使用率", "内存使用率", "已用 / 总内存", "下载速度", "上传速度", "电池电量", "Codex 剩余额度", "IP / 大致位置", "工作追踪（可展开）", "日期与时间" };
         internal Settings Copy() { var s = (Settings)MemberwiseClone(); s.Items = new List<string>(Items); s.WorkItems = WorkItems.Select(x => x.Copy()).ToList(); return s; }
         internal void Validate()
         {
@@ -31,10 +30,41 @@ namespace TaskbarSystemMonitor
             if (Accent != "Ocean" && Accent != "Plum" && Accent != "Jade") Accent = "System";
             Items = Items.Where(x => Array.IndexOf(MetricIds, x) >= 0).Distinct().ToList();
             if (Items.Count == 0) Items.Add("Cpu");
-            WorkItems = WorkItems.Where(x => !string.IsNullOrWhiteSpace(x.Title)).Take(30).ToList();
+            WorkItems = WorkItems.Where(x => !string.IsNullOrWhiteSpace(x.Keyword)).Take(30).ToList();
             foreach (var item in WorkItems) item.Validate();
         }
-        internal static string DefaultPath { get { return Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "TaskbarSystemMonitor", "settings.xml"); } }
+        internal static string DefaultPath { get { return AppPaths.SettingsPath; } }
+        internal static bool MigrateWorkKeywords(string path)
+        {
+            if (!File.Exists(path)) return false;
+            var root = XElement.Load(path); bool changed = false;
+            foreach (var item in root.Elements("workItems").Elements("work"))
+            {
+                var title = item.Attribute("title");
+                if (item.Attribute("keyword") == null && title != null) { item.SetAttributeValue("keyword", title.Value); changed = true; }
+                foreach (string name in new[] { "title", "status", "progress" })
+                { var old = item.Attribute(name); if (old != null) { old.Remove(); changed = true; } }
+            }
+            if (!changed) return false;
+            string staged = path + ".cleanup-" + Guid.NewGuid().ToString("N");
+            try { root.Save(staged); File.Replace(staged, path, null); }
+            finally { if (File.Exists(staged)) File.Delete(staged); }
+            return true;
+        }
+        internal static bool RemoveLegacyCalendar(string path)
+        {
+            if (!File.Exists(path)) return false;
+            var root = XElement.Load(path);
+            var removed = root.Elements("calendar").Concat(root.Elements("item").Where(x => (string)x == "Calendar")).ToList();
+            if (removed.Count == 0) return false;
+            foreach (var node in removed) node.Remove();
+            // Only remove retired data; preserve every unrelated setting and do not
+            // create a backup containing the old account or encrypted password.
+            string staged = path + ".cleanup-" + Guid.NewGuid().ToString("N");
+            try { root.Save(staged); File.Replace(staged, path, null); }
+            finally { if (File.Exists(staged)) File.Delete(staged); }
+            return true;
+        }
         internal static Settings Load(string path)
         {
             var s = new Settings();
@@ -57,13 +87,11 @@ namespace TaskbarSystemMonitor
                 s.GeoEnabled = (bool?)root.Attribute("geoEnabled") ?? false;
                 s.Accent = (string)root.Attribute("accent") ?? "System";
                 s.CodexPath = (string)root.Element("codexPath") ?? "";
-                var calendar = root.Element("calendar");
-                if (calendar != null) { s.CalendarUrl = (string)calendar.Attribute("url") ?? s.CalendarUrl; s.CalendarUser = (string)calendar.Attribute("user") ?? ""; s.CalendarSecret = (string)calendar.Element("secret") ?? ""; }
                 var work = root.Element("workItems");
                 if (work != null) s.WorkItems = work.Elements("work").Select(WorkItem.Load).ToList();
                 s.Items = root.Elements("item").Select(x => (string)x).ToList();
                 if (((int?)root.Attribute("version") ?? 2) < 3)
-                    foreach (string id in new[] { "Codex", "Calendar", "Ip", "Tracks", "Clock" }) if (!s.Items.Contains(id)) s.Items.Add(id);
+                    foreach (string id in new[] { "Codex", "Ip", "Tracks", "Clock" }) if (!s.Items.Contains(id)) s.Items.Add(id);
                 s.Validate();
             }
             catch (Exception error) { Log.Error(error); return new Settings(); }
@@ -73,39 +101,15 @@ namespace TaskbarSystemMonitor
         {
             Validate();
             Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(path)));
-            var root = new XElement("settings", new XAttribute("version", 3), new XAttribute("dock", Dock), new XAttribute("alwaysOnTop", AlwaysOnTop), new XAttribute("firstRun", FirstRun), new XAttribute("soft", SoftBackground),
+            var root = new XElement("settings", new XAttribute("version", 5), new XAttribute("dock", Dock), new XAttribute("alwaysOnTop", AlwaysOnTop), new XAttribute("firstRun", FirstRun), new XAttribute("soft", SoftBackground),
                 new XAttribute("height", Height), new XAttribute("fontSize", FontSize), new XAttribute("interval", Interval),
                 new XAttribute("theme", Theme), new XAttribute("alignment", Alignment), new XAttribute("network", NetworkId),
                 new XAttribute("fillBar", FillBar), new XAttribute("tintTaskbar", TintTaskbar), new XAttribute("geoEnabled", GeoEnabled), new XAttribute("accent", Accent),
                 Items.Select(x => new XElement("item", x)), new XElement("codexPath", CodexPath),
-                new XElement("calendar", new XAttribute("url", CalendarUrl), new XAttribute("user", CalendarUser), new XElement("secret", CalendarSecret)),
                 new XElement("workItems", WorkItems.Select(x => x.Save())));
             string temp = path + ".tmp";
             root.Save(temp);
             if (File.Exists(path)) File.Replace(temp, path, null); else File.Move(temp, path);
-        }
-    }
-
-    internal static class Startup
-    {
-        private const string Key = @"Software\Microsoft\Windows\CurrentVersion\Run";
-        internal static bool Enabled
-        {
-            get
-            {
-                try { using (var key = Registry.CurrentUser.OpenSubKey(Key)) return key != null && string.Equals(key.GetValue("TaskbarSystemMonitor") as string, Command, StringComparison.OrdinalIgnoreCase); }
-                catch { return false; }
-            }
-        }
-        internal static string Command { get { return "\"" + Application.ExecutablePath + "\" --startup"; } }
-        internal static void Set(bool enable)
-        {
-            // Failure is reported to the caller; a saved preference is not a startup registration.
-            using (var key = Registry.CurrentUser.CreateSubKey(Key))
-            {
-                if (enable) key.SetValue("TaskbarSystemMonitor", Command);
-                else key.DeleteValue("TaskbarSystemMonitor", false);
-            }
         }
     }
 

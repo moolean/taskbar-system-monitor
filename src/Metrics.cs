@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.ComponentModel;
 using System.Runtime.InteropServices;
 
@@ -11,13 +12,19 @@ namespace TaskbarSystemMonitor
         internal double Memory;
         internal ulong UsedBytes, TotalBytes;
         internal double? RxKbps, TxKbps;
-        internal string Battery = "—", NetworkName = "未连接";
+        internal string Battery = "—", NetworkName = "Offline";
         internal DateTime Time = DateTime.Now;
         internal string LocalIp = "—";
         internal BriefingData Briefing = new BriefingData();
+        internal Snapshot FrozenCopy()
+        {
+            var copy = (Snapshot)MemberwiseClone();
+            copy.Briefing = new BriefingData { Codex = Briefing.Codex, Location = Briefing.Location, WorkSummary = Briefing.WorkSummary, WorkKeywords = new List<string>(Briefing.WorkKeywords) };
+            return copy;
+        }
         internal string CpuText { get { return Cpu.HasValue ? Cpu.Value.ToString("0", System.Globalization.CultureInfo.InvariantCulture) + "%" : "—"; } }
         internal string MemoryText { get { return Memory.ToString("0", System.Globalization.CultureInfo.InvariantCulture) + "%"; } }
-        internal string MemoryDetail { get { return string.Format("{0:0.0} / {1:0.0} GiB", UsedBytes / 1073741824.0, TotalBytes / 1073741824.0); } }
+        internal string MemoryDetail { get { return string.Format(CultureInfo.InvariantCulture, "{0:0.0} / {1:0.0} GiB", UsedBytes / 1073741824.0, TotalBytes / 1073741824.0); } }
         internal string Value(string id)
         {
             switch (id)
@@ -28,9 +35,8 @@ namespace TaskbarSystemMonitor
                 case "Download": return Speed(RxKbps);
                 case "Upload": return Speed(TxKbps);
                 case "Battery": return Battery;
-                case "Clock": return Time.ToString("MM/dd ddd HH:mm");
+                case "Clock": return Time.ToString("MM/dd ddd HH:mm", CultureInfo.InvariantCulture);
                 case "Codex": return Briefing.Codex.Short;
-                case "Calendar": return Briefing.Calendar.Short;
                 case "Ip": return string.IsNullOrEmpty(Briefing.Location.Short) ? LocalIp : Briefing.Location.Short;
                 case "Tracks": return Briefing.WorkSummary;
                 default: return "—";
@@ -40,7 +46,7 @@ namespace TaskbarSystemMonitor
         {
             if (!kib.HasValue) return "—";
             double value = Math.Max(0, kib.Value);
-            return value >= 1048576 ? (value / 1048576).ToString("0.0") + " GiB/s" : value >= 1024 ? (value / 1024).ToString("0.0") + " MiB/s" : value.ToString("0") + " KiB/s";
+            return value >= 1048576 ? (value / 1048576).ToString("0.0", CultureInfo.InvariantCulture) + " GiB/s" : value >= 1024 ? (value / 1024).ToString("0.0", CultureInfo.InvariantCulture) + " MiB/s" : value.ToString("0", CultureInfo.InvariantCulture) + " KiB/s";
         }
     }
     internal sealed class Sampler

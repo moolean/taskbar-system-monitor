@@ -5,3 +5,8 @@ obj/
 *.suo
 dist/*
 !dist/.gitkeep
+settings.xml
+settings.xml.tmp
+runtime.log
+error.log
+*.dmp

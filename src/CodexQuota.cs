@@ -97,7 +97,7 @@ namespace TaskbarSystemMonitor
                     details.Add("\r\n" + (name.Length > 0 ? name : bucket.Key) + "\r\n" + string.Join("\r\n", Windows(value, true).ToArray()));
                 }
             else details.AddRange(Windows(main, true));
-            return new Reading(summary.Count == 0 ? "额度暂不可用" : string.Join(" · ", summary.ToArray()), string.Join("\r\n", details.ToArray()), summary.Count > 0);
+            return new Reading(summary.Count == 0 ? "Unavailable" : string.Join(" · ", summary.ToArray()), string.Join("\r\n", details.ToArray()), summary.Count > 0);
         }
         private static List<string> Windows(Dictionary<string, object> bucket, bool detail)
         {
@@ -108,8 +108,8 @@ namespace TaskbarSystemMonitor
                 if (window == null || JsonData.Get(window, "usedPercent") == null) continue;
                 double remaining = Math.Max(0, Math.Min(100, 100 - Convert.ToDouble(JsonData.Get(window, "usedPercent"))));
                 int minutes = Convert.ToInt32(JsonData.Get(window, "windowDurationMins") ?? 0);
-                string name = minutes == 10080 ? "周" : minutes == 300 ? "5h" : minutes > 0 ? minutes + "m" : "当前";
-                string line = name + "剩余 " + remaining.ToString("0") + "%";
+                string name = minutes == 10080 ? "Week" : minutes == 300 ? "5h" : minutes > 0 ? minutes + "m" : "Now";
+                string line = name + " " + remaining.ToString("0", System.Globalization.CultureInfo.InvariantCulture) + "% left";
                 if (detail && JsonData.Get(window, "resetsAt") != null)
                     line += " · 重置 " + new DateTimeOffset(1970, 1, 1, 0, 0, 0, TimeSpan.Zero).AddSeconds(Convert.ToDouble(JsonData.Get(window, "resetsAt"))).LocalDateTime.ToString("MM-dd HH:mm");
                 values.Add(line);

@@ -1,6 +1,7 @@
 using System;
 using System.Diagnostics;
 using System.Drawing;
+using System.Linq;
 using System.Threading;
 using System.Windows.Forms;
 
@@ -17,6 +18,8 @@ namespace TaskbarSystemMonitor
         private DockForm dock;
         private DetailsForm details;
         private ModulePopup popup;
+        private WorkForm workForm;
+        private readonly WorkUndoHistory workUndo = new WorkUndoHistory();
         private SettingsForm activeSettings;
         private readonly InfoHub info = new InfoHub();
         private Settings settings;
@@ -29,6 +32,16 @@ namespace TaskbarSystemMonitor
         {
             try
             {
+                Exception cleanupError = null;
+                try
+                {
+                    AppPaths.MigrateLegacySettings();
+                    Settings.RemoveLegacyCalendar(Settings.DefaultPath);
+                    Settings.RemoveLegacyCalendar(Settings.DefaultPath + ".tmp");
+                    Settings.MigrateWorkKeywords(Settings.DefaultPath);
+                    Settings.MigrateWorkKeywords(Settings.DefaultPath + ".tmp");
+                }
+                catch (Exception error) { cleanupError = error; }
                 settings = Settings.Load(Settings.DefaultPath);
                 dock = new DockForm(settings);
                 details = new DetailsForm();
@@ -41,19 +54,17 @@ namespace TaskbarSystemMonitor
                 dock.SettingsRequested += delegate { ShowSettings(); };
                 details.SettingsRequested += delegate { ShowSettings(); };
                 dock.ModuleRequested += ShowModule;
+                dock.WorkRequested += ShowWork;
+                dock.WorkReorderRequested += ReorderWork;
                 popup.ConfigureRequested += delegate(string page) { ShowSettings(page); };
                 popup.RefreshRequested += delegate { info.Reset(); info.Pulse(settings); };
-                popup.WorkEdited += delegate(int index, WorkItem item)
-                {
-                    var next = settings.Copy(); if (index < 0 || index >= next.WorkItems.Count) return;
-                    next.WorkItems[index] = item; if (SaveSettings(next)) { settings = next; ApplySettings(); }
-                };
                 // Poll auto-reset IPC events on the UI thread. This also works when
                 // the bar has never been shown (and therefore has no window handle).
                 exitSignal = new EventWaitHandle(false, EventResetMode.AutoReset, Program.ExitEvent);
                 showSignal = new EventWaitHandle(false, EventResetMode.AutoReset, Program.ShowEvent);
                 foreach (string action in Program.Actions) actions[action] = new EventWaitHandle(false, EventResetMode.AutoReset, Program.ActionEvent + action);
                 tray.Visible = true;
+                if (cleanupError != null) ReportError("旧版配置升级未完成，请检查配置文件的写入权限。已移除的功能不会恢复。", cleanupError);
                 if (settings.Dock) dock.Show();
                 timer = new System.Windows.Forms.Timer { Interval = 250 };
                 timer.Tick += delegate { Tick(); };
@@ -112,6 +123,11 @@ namespace TaskbarSystemMonitor
         private void ShowSettings(string page = null)
         {
             if (stopping || settingsOpen) return;
+            if (workForm != null && !workForm.IsDisposed)
+            {
+                workForm.Close();
+                if (workForm != null && !workForm.IsDisposed) return;
+            }
             settingsOpen = true;
             try
             {
@@ -180,15 +196,64 @@ namespace TaskbarSystemMonitor
         }
         private void ShowModule(string id)
         {
-            if (id == "Codex" || id == "Calendar" || id == "Ip" || id == "Tracks") popup.OpenModule(id, settings, last);
+            if (id == "Tracks")
+            {
+                ShowWork(-2);
+            }
+            else if (id == "Codex" || id == "Ip") popup.OpenModule(id, settings, last);
             else ShowDetails();
+        }
+        private void ShowWork(int index)
+        {
+            if (stopping) return;
+            if (settingsOpen) { if (activeSettings != null) activeSettings.Activate(); return; }
+            if (workForm == null || workForm.IsDisposed)
+            {
+                workForm = new WorkForm(settings, delegate(System.Collections.Generic.List<WorkItem> items)
+                {
+                    var next = settings.Copy(); next.WorkItems = items;
+                    if (!SaveSettings(next)) return false;
+                    settings = next;
+                    // Work edits must not reset quota polling or AppBar layout.
+                    if (last != null) { last.Briefing = info.Snapshot(settings); dock.UpdateSnapshot(last); }
+                    return true;
+                }, workUndo);
+                workForm.FormClosed += delegate { workForm = null; };
+                workForm.Show();
+            }
+            workForm.OpenItem(index);
+        }
+        private void ReorderWork(int source, int target)
+        {
+            if (stopping || settingsOpen) return;
+            if (workForm != null && !workForm.IsDisposed)
+            {
+                var before = settings.WorkItems.Select(x => x.Keyword).ToArray();
+                if (!workForm.SaveDraft(true)) return;
+                // A pending rename/add/delete can invalidate the bar's indices.
+                if (!before.SequenceEqual(settings.WorkItems.Select(x => x.Keyword))) return;
+                workForm.ReorderItem(source, target); return;
+            }
+            var next = settings.Copy();
+            if (!WorkOrder.Move(next.WorkItems, source, target) || !SaveSettings(next)) return;
+            settings = next;
+            if (last != null) { last.Briefing = info.Snapshot(settings); dock.UpdateSnapshot(last); }
         }
         private void ReportError(string message, Exception error)
         {
             Log.Error(error);
             if (tray != null && !stopping) tray.ShowBalloonTip(5000, "系统监控", message, ToolTipIcon.Warning);
         }
-        private void BeginExit() { if (stopping) return; Cleanup(); ExitThread(); }
+        private void BeginExit()
+        {
+            if (stopping) return;
+            if (workForm != null && !workForm.IsDisposed)
+            {
+                workForm.Close();
+                if (workForm != null && !workForm.IsDisposed) return;
+            }
+            Cleanup(); ExitThread();
+        }
         private void Cleanup()
         {
             if (stopping) return;
@@ -200,6 +265,7 @@ namespace TaskbarSystemMonitor
             if (dock != null) dock.Dispose();
             if (details != null) details.Dispose();
             if (popup != null) popup.Dispose();
+            if (workForm != null) workForm.Dispose();
             if (tray != null)
             {
                 tray.Visible = false;

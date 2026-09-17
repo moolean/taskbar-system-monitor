@@ -1,36 +1,49 @@
 [CmdletBinding()]
 param()
-
 $ErrorActionPreference = 'Stop'
-$projectRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
-$sourceExe = Join-Path $projectRoot 'dist\TaskbarSystemMonitor.exe'
-$installDirectory = Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) 'TaskbarSystemMonitor'
-$installedExe = Join-Path $installDirectory 'TaskbarSystemMonitor.exe'
+Import-Module (Join-Path $PSScriptRoot 'scripts\MonitorTools.psm1') -Force -DisableNameChecking
+$paths = Get-MonitorPaths
 
-. (Join-Path $projectRoot 'scripts\Stop-Monitor.ps1')
-Stop-KnownMonitor -ExecutablePaths @($sourceExe, $installedExe)
-& (Join-Path $projectRoot 'build.ps1')
+# A failed build must not take a working installation offline.
+Stop-MonitorProcess -ExecutablePaths @($paths.Source)
+& (Join-Path $PSScriptRoot 'build.ps1')
+$report = Join-Path $PSScriptRoot 'dist\install-self-test.txt'
+Invoke-MonitorCommand -Executable $paths.Source -Arguments @('--self-test', ('"--test-report=' + $report + '"')) -ReportPath $report
 
-New-Item -ItemType Directory -Path $installDirectory -Force | Out-Null
-$stagedExe = Join-Path $installDirectory 'TaskbarSystemMonitor.new.exe'
-Copy-Item -LiteralPath $sourceExe -Destination $stagedExe -Force
-if (Test-Path -LiteralPath $installedExe) {
-    Copy-Item -LiteralPath $installedExe -Destination (Join-Path $installDirectory 'TaskbarSystemMonitor.previous.exe') -Force
+Stop-MonitorProcess -ExecutablePaths @($paths.Installed, $paths.LegacyInstalled)
+New-Item -ItemType Directory -Path $paths.InstallDirectory -Force | Out-Null
+# Copy out of a packaged installer's virtual AppData while it can still see the
+# legacy file. Task Scheduler cannot see that private view. Keep the old backup.
+if (-not (Test-Path -LiteralPath $paths.Settings) -and (Test-Path -LiteralPath $paths.LegacySettings)) {
+    Copy-MonitorVerified -Source $paths.LegacySettings -Destination $paths.Settings
+    Write-Host 'Migrated existing settings byte-for-byte; the legacy copy is retained.'
 }
-# File.Replace / Move-Item can fail through MSIX LocalAppData virtualization.
-# The process has exited and an upgrade backup exists; copy and verify instead.
-Copy-Item -LiteralPath $stagedExe -Destination $installedExe -Force
-if ((Get-FileHash -LiteralPath $stagedExe -Algorithm SHA256).Hash -ne (Get-FileHash -LiteralPath $installedExe -Algorithm SHA256).Hash) {
-    throw 'Installed executable failed integrity verification. The previous EXE backup is retained.'
+$settingsHash = if (Test-Path -LiteralPath $paths.Settings) { (Get-FileHash -LiteralPath $paths.Settings).Hash } else { $null }
+$hadPrevious = Test-Path -LiteralPath $paths.Installed
+if ($hadPrevious) { Copy-MonitorVerified -Source $paths.Installed -Destination $paths.Backup }
+try {
+    Copy-MonitorVerified -Source $paths.Source -Destination $paths.Staged
+    Copy-MonitorVerified -Source $paths.Staged -Destination $paths.Installed
+    Invoke-MonitorStartup -Executable $paths.Installed -Action enable | Out-Null
+    $monitor = Start-MonitorIndependent
+    if ($settingsHash -and $settingsHash -ne (Get-FileHash -LiteralPath $paths.Settings).Hash) {
+        Write-Warning 'Configuration changed during launch (migration or user edit); settings were not overwritten by the installer.'
+    }
+    Write-Host "Installed and independently running: $($paths.Installed) (PID $($monitor.Id))" -ForegroundColor Green
+    Write-Host 'Windows starts it at user logon. No Codex window, terminal, or resident script is required.'
+} catch {
+    $installFailure = $_
+    if ($hadPrevious) {
+        try {
+            Stop-MonitorProcess -ExecutablePaths @($paths.Installed)
+            Copy-MonitorVerified -Source $paths.Backup -Destination $paths.Installed
+            $state = Invoke-MonitorStartup -Executable $paths.Source -Action status
+            if ($state.Registered) { Start-MonitorIndependent -Controller $paths.Source | Out-Null }
+            else { Start-Process -FilePath $paths.Installed -WindowStyle Normal | Out-Null }
+            Write-Warning 'Upgrade failed; the previous executable was restored and restarted.'
+        } catch { Write-Warning "Automatic recovery needs attention: $($_.Exception.Message). The previous EXE is retained at $($paths.Backup)." }
+    }
+    throw $installFailure
+} finally {
+    if (Test-Path -LiteralPath $paths.Staged) { Remove-Item -LiteralPath $paths.Staged -Force }
 }
-Remove-Item -LiteralPath $stagedExe -Force
-
-$runKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run'
-New-Item -Path $runKey -Force | Out-Null
-Set-ItemProperty -Path $runKey -Name 'TaskbarSystemMonitor' -Value "`"$installedExe`" --startup"
-
-# This is the visible resource bar the user is installing, not a console helper.
-$monitor = Start-Process -FilePath $installedExe -PassThru
-if ($monitor.WaitForExit(2500)) { throw "Monitor exited during startup (code $($monitor.ExitCode)). See $installDirectory\error.log" }
-Write-Host 'Installed and running. Startup registration is enabled for the current user.' -ForegroundColor Green
-Write-Host "Installed to: $installedExe"

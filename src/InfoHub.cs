@@ -19,13 +19,8 @@ namespace TaskbarSystemMonitor
         {
             lock (gate)
             {
-                var meetings = data.Meetings.Where(x => x.End > DateTimeOffset.Now).ToList();
-                Reading calendar = data.Calendar;
-                if (calendar.Available && meetings.Count > 0)
-                    calendar = new Reading(meetings[0].Summary(DateTimeOffset.Now), calendar.Details, true) { UpdatedUtc = calendar.UpdatedUtc };
-                else if (calendar.Available) calendar = new Reading("未来 14 天暂无日程", calendar.Details, true) { UpdatedUtc = calendar.UpdatedUtc };
                 Reading location = settings.GeoEnabled ? data.Location : new Reading("", "公网查询已关闭，仅显示本地 IP。可在设置 → 数据连接了解并开启 IP 归属地查询。") { UpdatedUtc = data.Location.UpdatedUtc };
-                return new BriefingData { Codex = data.Codex, Calendar = calendar, Location = location, Meetings = meetings, WorkSummary = BriefingData.SummarizeWork(settings.WorkItems) };
+                return new BriefingData { Codex = data.Codex, Location = location, WorkSummary = BriefingData.SummarizeWork(settings.WorkItems), WorkKeywords = settings.WorkItems.Select(x => x.Keyword).ToList() };
             }
         }
         internal void Pulse(Settings settings)
@@ -34,19 +29,8 @@ namespace TaskbarSystemMonitor
             {
                 Reading result;
                 try { result = CodexQuota.Read(config.CodexPath); }
-                catch (Exception error) { result = new Reading("未连接 · 点击检查", SafeError(error)); }
+                catch (Exception error) { result = new Reading("Unavailable", SafeError(error)); }
                 return delegate { data.Codex = result; };
-            });
-            if (settings.Items.Contains("Calendar")) Schedule("calendar", 120, settings.Copy(), delegate(Settings config)
-            {
-                List<Meeting> meetings = new List<Meeting>(); Reading result;
-                if (config.CalendarUser.Length == 0 || config.CalendarSecret.Length == 0) result = new Reading("待连接 · 点击配置", "请在设置 → 数据连接填写飞书生成的 CalDAV 专用账户。凭据用 Windows 当前用户加密，程序只读日历，不修改日程。");
-                else
-                {
-                    try { meetings = CalendarSource.Read(config); result = new Reading("已同步", "已同步未来 14 天日程。点击列表展开时间、地点和内容。", true); }
-                    catch (Exception error) { result = new Reading("同步失败 · 点击检查", SafeError(error)); }
-                }
-                return delegate { data.Calendar = result; data.Meetings = meetings; };
             });
             if (settings.Items.Contains("Ip") && settings.GeoEnabled) Schedule("geo", 600, settings.Copy(), delegate(Settings config)
             {
@@ -74,7 +58,7 @@ namespace TaskbarSystemMonitor
         }
         internal static Reading ReadLocation()
         {
-            var response = JsonData.Parse(SafeHttp.Read(new Uri("https://ipwho.is/?fields=success,message,ip,city,region,country_code,connection.isp"), "GET"));
+            var response = JsonData.Parse(SafeHttp.Read(new Uri("https://ipwho.is/?fields=success,message,ip,city,region,country_code,connection.isp")));
             if (!object.Equals(JsonData.Get(response, "success"), true)) throw new InvalidOperationException("IP 查询服务暂不可用。");
             string ip = JsonData.Text(response, "ip"), city = JsonData.Text(response, "city"), region = JsonData.Text(response, "region");
             string place = city.Length > 0 ? city : region;

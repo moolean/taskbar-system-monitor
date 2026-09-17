@@ -6,8 +6,8 @@ using System.Windows.Forms;
 [assembly: System.Reflection.AssemblyTitle("Taskbar System Monitor")]
 [assembly: System.Reflection.AssemblyCompany("moolean")]
 [assembly: System.Reflection.AssemblyProduct("Taskbar System Monitor")]
-[assembly: System.Reflection.AssemblyVersion("3.1.1.0")]
-[assembly: System.Reflection.AssemblyFileVersion("3.1.1.0")]
+[assembly: System.Reflection.AssemblyVersion("3.7.0.0")]
+[assembly: System.Reflection.AssemblyFileVersion("3.7.0.0")]
 
 namespace TaskbarSystemMonitor
 {
@@ -17,16 +17,22 @@ namespace TaskbarSystemMonitor
         internal const string ExitEvent = "Local\\TaskbarSystemMonitor.moolean.ExitV2";
         internal const string ShowEvent = "Local\\TaskbarSystemMonitor.moolean.ShowV2";
         internal const string ActionEvent = "Local\\TaskbarSystemMonitor.moolean.Action.";
-        internal static readonly string[] Actions = { "Codex", "Calendar", "Ip", "Tracks", "Settings" };
+        internal static readonly string[] Actions = { "Codex", "Ip", "Tracks", "Settings" };
         internal static string RequestedAction(string[] args)
         { string action = Array.Find(args, x => x.StartsWith("--module=", StringComparison.Ordinal)); return action != null && Array.IndexOf(Actions, action.Substring(9)) >= 0 ? action.Substring(9) : null; }
 
         [STAThread]
         private static int Main(string[] args)
         {
+            string startupAction = Array.Find(args, x => x.StartsWith("--startup-control=", StringComparison.Ordinal));
+            if (startupAction != null)
+            {
+                string report = Array.Find(args, x => x.StartsWith("--startup-report=", StringComparison.Ordinal));
+                return Startup.Control(startupAction.Substring(18), report == null ? null : report.Substring(17));
+            }
+            if (Array.IndexOf(args, "--exit") >= 0) return Signal(ExitEvent);
             Application.EnableVisualStyles();
             Application.SetCompatibleTextRenderingDefault(false);
-            if (Array.IndexOf(args, "--exit") >= 0) return Signal(ExitEvent);
             if (Array.IndexOf(args, "--self-test") >= 0)
                 return SelfTests.Run(args);
             string sourceReport = Array.Find(args, x => x.StartsWith("--codex-test=", StringComparison.OrdinalIgnoreCase));
@@ -36,27 +42,34 @@ namespace TaskbarSystemMonitor
                 catch (Exception error) { File.WriteAllText(sourceReport.Substring(13), InfoHub.SafeError(error)); return 22; }
             }
             string desktopReport = Array.Find(args, x => x.StartsWith("--appbar-test=", StringComparison.OrdinalIgnoreCase));
-            string calendarReport = Array.Find(args, x => x.StartsWith("--calendar-test=", StringComparison.OrdinalIgnoreCase));
-            if (calendarReport != null)
+            string workReport = Array.Find(args, x => x.StartsWith("--work-test=", StringComparison.OrdinalIgnoreCase));
+            string barSample = Array.Find(args, x => x.StartsWith("--bar-sample=", StringComparison.OrdinalIgnoreCase));
+            if (barSample != null) return WorkTests.BarSample(barSample.Substring(13), Array.IndexOf(args, "--dark") >= 0);
+            if (workReport != null)
             {
-                var report = new System.Collections.Generic.List<string>();
                 try
                 {
-                    var config = Settings.Load(Settings.DefaultPath);
-                    report.Add("Configuration file: " + Settings.DefaultPath);
-                    if (config.CalendarUser.Length == 0 || config.CalendarSecret.Length == 0) throw new InvalidOperationException("未配置 CalDAV 专用账户和密码。");
-                    var meetings = CalendarSource.Read(config, delegate(string step) { report.Add(step); });
-                    report.Add("PASS: read-only calendar sync; upcoming event count = " + meetings.Count);
-                    File.WriteAllLines(calendarReport.Substring(16), report); return 0;
+                    var demo = WorkTests.Demo(); if (Array.IndexOf(args, "--dark") >= 0) demo.Theme = "Dark";
+                    using (var form = new WorkForm(demo, delegate { return true; }))
+                    {
+                        form.Text += " · 示例检查（不写入配置）";
+                        // Keep inspection stable while developer tools take focus;
+                        // the same non-topmost pin is available in the real panel.
+                        form.KeepOpen = true;
+                        form.ShowInTaskbar = true; // Expose only the sample to desktop inspection tools.
+                        form.ShowDialog();
+                    }
+                    File.WriteAllText(workReport.Substring(12), "PASS: keyword workspace closed; no real configuration was written."); return 0;
                 }
-                catch (Exception error) { report.Add("FAIL: " + error.GetType().Name + ": " + InfoHub.SafeError(error)); File.WriteAllLines(calendarReport.Substring(16), report); return 23; }
+                catch (Exception error) { File.WriteAllText(workReport.Substring(12), error.ToString()); return 25; }
             }
             string settingsReport = Array.Find(args, x => x.StartsWith("--settings-test=", StringComparison.OrdinalIgnoreCase));
             if (settingsReport != null)
             {
                 try
                 {
-                    using (var form = new SettingsForm(new Settings { FirstRun = false }))
+                    bool workSample = Array.IndexOf(args, "--work-sample") >= 0;
+                    using (var form = new SettingsForm(workSample ? WorkTests.Demo() : new Settings { FirstRun = false }, workSample ? "Tracks" : null))
                     {
                         File.WriteAllText(settingsReport.Substring(16), "Settings constructed; waiting for the dialog to close.");
                         form.ShowDialog();
@@ -100,7 +113,7 @@ namespace TaskbarSystemMonitor
         {
             try
             {
-                string folder = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "TaskbarSystemMonitor");
+                string folder = AppPaths.DirectoryPath;
                 Directory.CreateDirectory(folder); File.AppendAllText(Path.Combine(folder, "runtime.log"), DateTime.Now.ToString("s") + " " + text + Environment.NewLine);
             }
             catch { }
@@ -109,7 +122,7 @@ namespace TaskbarSystemMonitor
         {
             try
             {
-                string folder = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "TaskbarSystemMonitor");
+                string folder = AppPaths.DirectoryPath;
                 Directory.CreateDirectory(folder);
                 string path = Path.Combine(folder, "error.log");
                 if (File.Exists(path) && new FileInfo(path).Length > 262144) File.Delete(path);

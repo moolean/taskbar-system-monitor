@@ -25,7 +25,7 @@ namespace TaskbarSystemMonitor
             NetworkInterface chosen = string.IsNullOrEmpty(selectedId)
                 ? adapters.Where(x => x.OperationalStatus == OperationalStatus.Up && HasGateway(x)).OrderByDescending(x => x.Speed).FirstOrDefault()
                 : adapters.FirstOrDefault(x => x.Id == selectedId && x.OperationalStatus == OperationalStatus.Up);
-            if (chosen == null) { previousId = null; snapshot.NetworkName = "未连接"; return; }
+            if (chosen == null) { previousId = null; snapshot.NetworkName = "Offline"; return; }
             IPInterfaceStatistics stats = chosen.GetIPStatistics();
             if (previousId == chosen.Id)
             {
@@ -51,10 +51,10 @@ namespace TaskbarSystemMonitor
             PowerStatus status = SystemInformation.PowerStatus;
             int flags = (int)status.BatteryChargeStatus;
             if (flags == 255) return "—";
-            if ((flags & 128) != 0) return "无电池";
+            if ((flags & 128) != 0) return "N/A";
             float value = status.BatteryLifePercent;
             if (value < 0 || value > 1) return "—";
-            return ((flags & 8) != 0 ? "充电 " : status.PowerLineStatus == PowerLineStatus.Online ? "接电 " : "") + (value * 100).ToString("0") + "%";
+            return ((flags & 8) != 0 ? "AC+ " : status.PowerLineStatus == PowerLineStatus.Online ? "AC " : "") + (value * 100).ToString("0", System.Globalization.CultureInfo.InvariantCulture) + "%";
         }
     }
 }

@@ -38,7 +38,7 @@ namespace TaskbarSystemMonitor
             var card = control as SettingsCard;
             var button = control as UiButton;
             var toggle = control as ToggleSwitch;
-            if (card != null) { card.Colors = c; card.BackColor = c.Card; }
+            if (card != null) { card.Colors = c; card.BackColor = card.Frameless ? c.Background : c.Card; }
             else if (button != null) { button.Colors = c; button.BackColor = control.Parent == null ? c.Background : control.Parent.BackColor; }
             else if (toggle != null) { toggle.Colors = c; toggle.BackColor = control.Parent == null ? c.Card : control.Parent.BackColor; }
             else if (control is Label) { control.ForeColor = object.Equals(control.Tag,"muted") ? c.Muted : c.Text; control.BackColor = Color.Transparent; }
@@ -59,10 +59,11 @@ namespace TaskbarSystemMonitor
     internal sealed class SettingsCard : Panel
     {
         internal SettingsColors Colors;
+        internal bool Frameless;
         internal SettingsCard() { DoubleBuffered = true; }
         protected override void OnPaint(PaintEventArgs e)
         {
-            base.OnPaint(e); if (Colors == null || Width < 4 || Height < 4) return;
+            base.OnPaint(e); if (Frameless || Colors == null || Width < 4 || Height < 4) return;
             e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
             using (var pen = new Pen(Colors.Border)) using (var path = SettingsUi.Round(new Rectangle(0,0,Width-1,Height-1), 10)) e.Graphics.DrawPath(pen,path);
         }
@@ -70,7 +71,7 @@ namespace TaskbarSystemMonitor
     internal sealed class UiButton : Button
     {
         internal SettingsColors Colors;
-        internal bool Primary, Navigation, Selected;
+        internal bool Primary, Navigation, Selected, Quiet, Danger;
         private bool hover;
         internal UiButton() { FlatStyle = FlatStyle.Flat; FlatAppearance.BorderSize = 0; Cursor = Cursors.Hand; DoubleBuffered = true; UseVisualStyleBackColor = false; }
         protected override void OnMouseEnter(EventArgs e) { hover = true; Invalidate(); base.OnMouseEnter(e); }
@@ -79,10 +80,11 @@ namespace TaskbarSystemMonitor
         {
             if (Colors == null) { base.OnPaint(e); return; }
             e.Graphics.Clear(BackColor); e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
-            Color background = Primary ? Colors.Action : Selected || hover ? Colors.Selected : Navigation ? BackColor : Colors.Card;
+            Color background = Primary ? Colors.Action : Selected || hover ? Colors.Selected : Navigation || Quiet ? BackColor : Colors.Card;
             using (var brush = new SolidBrush(background)) using (var path = SettingsUi.Round(new Rectangle(1,1,Width-3,Height-3),8))
-            { e.Graphics.FillPath(brush,path); if (!Primary && !Navigation) using (var pen = new Pen(Colors.Border)) e.Graphics.DrawPath(pen,path); }
-            TextRenderer.DrawText(e.Graphics, Text, Font, new Rectangle(Navigation ? 14 : 4,0,Width-(Navigation ? 20 : 8),Height), !Enabled ? Colors.Muted : Primary ? Colors.ActionText : Colors.Text, TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis | (Navigation ? TextFormatFlags.Left : TextFormatFlags.HorizontalCenter));
+            { e.Graphics.FillPath(brush,path); if (!Primary && !Navigation && !Quiet) using (var pen = new Pen(Colors.Border)) e.Graphics.DrawPath(pen,path); }
+            Color textColor = !Enabled ? Colors.Muted : Primary ? Colors.ActionText : Danger && !SystemInformation.HighContrast ? (Colors.Background.GetBrightness() > .5f ? Color.FromArgb(168, 68, 62) : Color.FromArgb(227, 143, 135)) : Colors.Text;
+            TextRenderer.DrawText(e.Graphics, Text, Font, new Rectangle(Navigation ? 14 : 4,0,Width-(Navigation ? 20 : 8),Height), textColor, TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis | (Navigation ? TextFormatFlags.Left : TextFormatFlags.HorizontalCenter));
             if (Focused && ShowFocusCues) ControlPaint.DrawFocusRectangle(e.Graphics, Rectangle.Inflate(ClientRectangle,-5,-5));
         }
     }
