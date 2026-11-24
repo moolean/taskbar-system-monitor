@@ -6,8 +6,8 @@ using System.Windows.Forms;
 [assembly: System.Reflection.AssemblyTitle("Taskbar System Monitor")]
 [assembly: System.Reflection.AssemblyCompany("moolean")]
 [assembly: System.Reflection.AssemblyProduct("Taskbar System Monitor")]
-[assembly: System.Reflection.AssemblyVersion("3.7.0.0")]
-[assembly: System.Reflection.AssemblyFileVersion("3.7.0.0")]
+[assembly: System.Reflection.AssemblyVersion("3.9.1.0")]
+[assembly: System.Reflection.AssemblyFileVersion("3.9.1.0")]
 
 namespace TaskbarSystemMonitor
 {
@@ -31,6 +31,32 @@ namespace TaskbarSystemMonitor
                 return Startup.Control(startupAction.Substring(18), report == null ? null : report.Substring(17));
             }
             if (Array.IndexOf(args, "--exit") >= 0) return Signal(ExitEvent);
+            string requestedPid = Array.Find(args, x => x.StartsWith("--wait-for-bar=", StringComparison.Ordinal));
+            if (requestedPid != null)
+            {
+                int pid;
+                if (!int.TryParse(requestedPid.Substring(15), out pid) || pid <= 0) return 31;
+                return !Settings.Load(Settings.DefaultPath).Dock || BarReadiness.Wait(pid, 12000) ? 0 : 32;
+            }
+            string mouseReport = Array.Find(args, x => x.StartsWith("--mouse-test=", StringComparison.Ordinal));
+            if (mouseReport != null)
+            {
+                var reading = LogitechBattery.Read(Settings.Load(Settings.DefaultPath).MouseName).Reading;
+                File.WriteAllText(mouseReport.Substring(13), reading.Short + "\r\n" + reading.FullDetails);
+                return reading.Available ? 0 : 27;
+            }
+            bool enableCity = Array.IndexOf(args, "--enable-exit-city") >= 0;
+            if (enableCity || Array.IndexOf(args, "--enable-mouse-battery") >= 0)
+            {
+                bool acquired;
+                using (var mutex = new Mutex(true, MutexName, out acquired))
+                {
+                    if (!acquired) return 21; // Never race an open notes/settings editor.
+                    try { if (enableCity) Settings.EnableExitCity(Settings.DefaultPath); else Settings.EnableMouseBattery(Settings.DefaultPath); return 0; }
+                    catch (Exception error) { Log.Error(error); return 28; }
+                    finally { mutex.ReleaseMutex(); }
+                }
+            }
             Application.EnableVisualStyles();
             Application.SetCompatibleTextRenderingDefault(false);
             if (Array.IndexOf(args, "--self-test") >= 0)
@@ -69,7 +95,11 @@ namespace TaskbarSystemMonitor
                 try
                 {
                     bool workSample = Array.IndexOf(args, "--work-sample") >= 0;
-                    using (var form = new SettingsForm(workSample ? WorkTests.Demo() : new Settings { FirstRun = false }, workSample ? "Tracks" : null))
+                    bool mouseSample = Array.IndexOf(args, "--mouse-sample") >= 0;
+                    var sampleSettings = workSample ? WorkTests.Demo() : new Settings { FirstRun = false };
+                    if (mouseSample) sampleSettings.Items.Insert(4, "MouseBattery");
+                    if (Array.IndexOf(args, "--dark") >= 0) sampleSettings.Theme = "Dark";
+                    using (var form = new SettingsForm(sampleSettings, workSample ? "Tracks" : mouseSample ? "Connections" : null))
                     {
                         File.WriteAllText(settingsReport.Substring(16), "Settings constructed; waiting for the dialog to close.");
                         form.ShowDialog();
@@ -88,8 +118,8 @@ namespace TaskbarSystemMonitor
                 try
                 {
                     if (desktopReport != null) return DesktopTests.Run(desktopReport.Substring(14));
+                    Log.Info("Monitor starting " + Application.ProductVersion + (Array.IndexOf(args, "--startup") >= 0 ? " via Windows startup." : "."));
                     using (var context = new MonitorContext(args)) Application.Run(context);
-                    return 0;
                 }
                 catch (Exception error)
                 {
@@ -98,6 +128,12 @@ namespace TaskbarSystemMonitor
                 }
                 finally { mutex.ReleaseMutex(); }
             }
+            // Only reached after the normal message loop returned, editor saves
+            // completed, all windows were disposed and the mutex was released.
+            // Do not leave the logon task occupied by a non-UI foreground thread.
+            Log.Info("Monitor exited normally. PID " + System.Diagnostics.Process.GetCurrentProcess().Id);
+            Environment.Exit(0);
+            return 0;
         }
 
         private static int Signal(string name)

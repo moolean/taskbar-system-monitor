@@ -36,7 +36,8 @@ namespace TaskbarSystemMonitor
     internal sealed class BriefingData
     {
         internal Reading Codex = new Reading("Connecting…", "正在通过本机 Codex 的只读 app-server 接口读取额度。");
-        internal Reading Location = new Reading("", "只显示本地 IP；公网位置尚未获取。");
+        internal Reading Location = new Reading("Locating…", "正在查询当前网络出口城市。");
+        internal Reading MouseBattery = new Reading("Connecting…", "正在读取本机 G HUB 鼠标电量。");
         internal string WorkSummary = "Add keyword…";
         internal List<string> WorkKeywords = new List<string>();
         internal static string SummarizeWork(IEnumerable<WorkItem> work)

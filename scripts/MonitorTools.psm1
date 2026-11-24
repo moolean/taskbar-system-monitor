@@ -58,7 +58,7 @@ function Invoke-MonitorStartup {
     }
     $report = Join-Path ([IO.Path]::GetTempPath()) ('monitor-startup-' + [guid]::NewGuid().ToString('N') + '.json')
     try {
-        Invoke-MonitorCommand -Executable $Executable -Arguments @("--startup-control=$Action", ('"--startup-report=' + $report + '"')) -ReportPath $report
+        Invoke-MonitorCommand -Executable $Executable -Arguments @("--startup-control=$Action", ('"--startup-report=' + $report + '"')) -ReportPath $report -TimeoutMs 60000
         Get-Content -LiteralPath $report -Raw | ConvertFrom-Json
     } finally {
         if (Test-Path -LiteralPath $report) { Remove-Item -LiteralPath $report -Force }
@@ -70,9 +70,18 @@ function Stop-MonitorProcess {
     foreach ($process in @(Get-MonitorProcess -ExecutablePaths $ExecutablePaths)) {
         if ($process.HasExited) { continue }
         # Exit IPC flushes notes and unregisters the AppBar; never force-kill.
-        Invoke-MonitorCommand -Executable $process.Path -Arguments '--exit' -TimeoutMs 5000
-        if (-not $process.WaitForExit(8000)) {
-            throw 'Monitor could not exit safely. Resolve any unsaved-note error in its window, then retry.'
+        if ($process.SessionId -ne [Diagnostics.Process]::GetCurrentProcess().SessionId) {
+            throw 'The monitor is running in a different desktop session; it was not stopped.'
+        }
+        try {
+            $exitSignal = [Threading.EventWaitHandle]::OpenExisting('Local\TaskbarSystemMonitor.moolean.ExitV2')
+            try { $null = $exitSignal.Set() } finally { $exitSignal.Dispose() }
+        } catch [Threading.WaitHandleCannotBeOpenedException] {
+            # It may already have closed its editor/IPC and still be draining.
+            Write-Verbose 'Exit endpoint is not open; waiting for the exact process.'
+        }
+        if (-not $process.WaitForExit(30000)) {
+            throw 'The old process has not exited. No force-stop was attempted; check the editor and runtime.log before retrying.'
         }
     }
 }
@@ -85,6 +94,14 @@ function Copy-MonitorVerified {
     }
 }
 
+function Assert-MonitorReady {
+    param([string]$Controller, [System.Diagnostics.Process]$Monitor)
+    if ([version](Get-Item -LiteralPath $Controller).VersionInfo.FileVersion -ge [version]'3.9.1.0') {
+        Invoke-MonitorCommand -Executable $Controller -Arguments ("--wait-for-bar=" + $Monitor.Id) -TimeoutMs 60000
+    }
+    if ($Monitor.HasExited) { throw 'The monitor exited before startup was verified.' }
+}
+
 function Start-MonitorIndependent {
     param([string]$Controller, [switch]$Restart)
     $paths = Get-MonitorPaths
@@ -94,20 +111,40 @@ function Start-MonitorIndependent {
         throw 'The independent launcher is missing or targets another location. Run install.ps1.'
     }
     $running = @(Get-MonitorProcess -ExecutablePaths @($paths.Installed))
-    if (-not $Restart -and $state.State -eq 4 -and $running.Count -eq 1) { return $running[0] }
+    if (-not $Restart -and $state.State -eq 4 -and $running.Count -eq 1) {
+        Assert-MonitorReady -Controller $Controller -Monitor $running[0]
+        return $running[0]
+    }
     if ($running.Count -gt 0) { Stop-MonitorProcess -ExecutablePaths @($paths.Installed) }
-    Invoke-MonitorStartup -Executable $Controller -Action start | Out-Null
+    # IgnoreNew may discard Run while the scheduler still drains the old action.
+    $drainClock = [Diagnostics.Stopwatch]::StartNew()
+    while ($state.State -eq 4) {
+        $arrived = @(Get-MonitorProcess -ExecutablePaths @($paths.Installed))
+        if ($arrived.Count -eq 1) {
+            Assert-MonitorReady -Controller $Controller -Monitor $arrived[0]
+            return $arrived[0]
+        }
+        if ($drainClock.Elapsed.TotalSeconds -gt 15) { throw 'The old task is still Running. A replacement has not been started.' }
+        Start-Sleep -Milliseconds 250
+        $state = Invoke-MonitorStartup -Executable $Controller -Action status
+    }
+    # A lost acknowledgement is not a failed launch: first look for the
+    # actual installed window. Don't launch twice or roll back a healthy bar.
+    $dispatchError = $null
+    try { Start-ScheduledTask -TaskName $state.TaskName -ErrorAction Stop }
+    catch { $dispatchError = $_ }
     $clock = [Diagnostics.Stopwatch]::StartNew()
     do {
         $running = @(Get-MonitorProcess -ExecutablePaths @($paths.Installed))
         if ($running.Count -eq 1) {
             if ($running[0].WaitForExit(2500)) { throw "Monitor exited during startup ($($running[0].ExitCode))." }
+            Assert-MonitorReady -Controller $Controller -Monitor $running[0]
             return $running[0]
         }
         Start-Sleep -Milliseconds 100
     } while ($clock.ElapsedMilliseconds -lt 10000)
     $state = Invoke-MonitorStartup -Executable $Controller -Action status
-    throw "Task did not launch the installed EXE. Scheduler result: $($state.LastResult)."
+    throw "Task did not launch the installed EXE. Scheduler result: $($state.LastResult). $dispatchError"
 }
 
 Export-ModuleMember -Function Get-MonitorPaths,Get-MonitorProcess,Invoke-MonitorCommand,Invoke-MonitorStartup,Stop-MonitorProcess,Copy-MonitorVerified,Start-MonitorIndependent

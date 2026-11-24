@@ -1,5 +1,5 @@
 [CmdletBinding()]
-param()
+param([switch]$MouseBattery, [switch]$ExitCity)
 $ErrorActionPreference = 'Stop'
 Import-Module (Join-Path $PSScriptRoot 'scripts\MonitorTools.psm1') -Force -DisableNameChecking
 $paths = Get-MonitorPaths
@@ -25,6 +25,16 @@ try {
     Copy-MonitorVerified -Source $paths.Source -Destination $paths.Staged
     Copy-MonitorVerified -Source $paths.Staged -Destination $paths.Installed
     Invoke-MonitorStartup -Executable $paths.Installed -Action enable | Out-Null
+    if ($MouseBattery) {
+        Invoke-MonitorCommand -Executable $paths.Installed -Arguments '--enable-mouse-battery'
+        $settingsHash = (Get-FileHash -LiteralPath $paths.Settings).Hash
+        Write-Host 'Mouse battery module enabled; existing notes and other settings are preserved.'
+    }
+    if ($ExitCity) {
+        Invoke-MonitorCommand -Executable $paths.Installed -Arguments '--enable-exit-city'
+        $settingsHash = (Get-FileHash -LiteralPath $paths.Settings).Hash
+        Write-Host 'Right-edge city enabled: the public exit city is queried every minute.'
+    }
     $monitor = Start-MonitorIndependent
     if ($settingsHash -and $settingsHash -ne (Get-FileHash -LiteralPath $paths.Settings).Hash) {
         Write-Warning 'Configuration changed during launch (migration or user edit); settings were not overwritten by the installer.'

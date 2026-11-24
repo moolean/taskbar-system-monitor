@@ -11,6 +11,8 @@ namespace TaskbarSystemMonitor
         internal static void Run()
         {
             StartupTests.Run();
+            Require(!new Settings().Items.Contains("Clock") && Settings.MetricIds.Contains("Clock"), "Clock is opt-in, not added by default");
+            MouseBatteryTests.Run();
             Require(AppDomain.CurrentDomain.SetupInformation.TargetFrameworkName == ".NETFramework,Version=v4.8", "Published runtime must target .NET Framework 4.8");
             Require(System.Net.ServicePointManager.SecurityProtocol == System.Net.SecurityProtocolType.SystemDefault, "HTTPS must use OS-default TLS");
             Require(System.Net.ServicePointManager.ServerCertificateValidationCallback == null, "Certificate validation must not be bypassed");
@@ -32,6 +34,8 @@ namespace TaskbarSystemMonitor
             finally { if (File.Exists(path)) File.Delete(path); }
             TestCalendarRemoval();
             WorkTests.Run();
+            BarSpacingTests.Run();
+            CityTests.Run();
             TestRedirects();
             TestReadOnlyText();
             TestEnglishBar();
@@ -47,9 +51,9 @@ namespace TaskbarSystemMonitor
         }
         private static void TestReadOnlyText()
         {
-            Require(BarRenderer.IsReadOnly("Codex") && BarRenderer.IsReadOnly("Ip") && !BarRenderer.IsReadOnly("Tracks") && !BarRenderer.IsReadOnly("Cpu"), "Only Codex and IP become passive text");
+            Require(BarRenderer.IsReadOnly("Codex") && BarRenderer.IsReadOnly("Ip") && BarRenderer.IsReadOnly("MouseBattery") && !BarRenderer.IsReadOnly("Tracks") && !BarRenderer.IsReadOnly("Cpu"), "Codex, IP and mouse battery are passive text");
             foreach (bool light in new[] { true, false })
-            foreach (string id in new[] { "Codex", "Ip" })
+            foreach (string id in new[] { "Codex", "Ip", "MouseBattery" })
             using (var normal = new Bitmap(320, 28)) using (var hover = new Bitmap(320, 28))
             using (var g = Graphics.FromImage(normal)) using (var h = Graphics.FromImage(hover))
             {
@@ -133,7 +137,7 @@ namespace TaskbarSystemMonitor
         internal static Snapshot Demo()
         {
             return new Snapshot { Cpu = 12, Memory = 42, UsedBytes = 14431090114, TotalBytes = 34359738368, RxKbps = 2355, TxKbps = 86, Time = new DateTime(2026, 9, 16, 14, 30, 0),
-                Briefing = new BriefingData { Codex = new Reading("Week 90% left", "示例", true), Location = new Reading("203.0.113.8 · Example City", "示例", true), WorkSummary = "项目交付 · 数据复核", WorkKeywords = new System.Collections.Generic.List<string> { "项目交付", "数据复核" } } };
+                LocalIp = "192.0.2.8", Briefing = new BriefingData { Codex = new Reading("Week 90% left", "示例", true), Location = new Reading("Singapore", "示例城市", true), MouseBattery = new Reading("73%+", "示例鼠标，非真实电量", true), WorkSummary = "项目交付 · 数据复核", WorkKeywords = new System.Collections.Generic.List<string> { "项目交付", "数据复核" } } };
         }
         internal static void Preview(string path)
         {
@@ -142,8 +146,11 @@ namespace TaskbarSystemMonitor
                 graphics.Clear(Color.White);
                 foreach (bool light in new[] { true, false })
                 {
-                    var settings = new Settings { Theme = light ? "Light" : "Dark", Accent = "Ocean" };
+                    var settings = new Settings { Theme = light ? "Light" : "Dark", Accent = "Ocean", GeoEnabled = true };
+                    settings.Items.Insert(4, "MouseBattery");
                     var sample = Demo();
+                    sample.Cpu = 24; sample.Memory = 45; sample.RxKbps = 17; sample.TxKbps = 4;
+                    sample.Briefing.MouseBattery = new Reading("8%+", "示例鼠标，非真实电量", true);
                     sample.Briefing.WorkKeywords.AddRange(new[] { "发布计划", "客户同步", "方案评审", "版本回归", "阅读清单", "性能优化", "文档整理", "下周安排" });
                     BarRenderer.Draw(graphics, new Rectangle(0, light ? 0 : 36, 2048, 28), settings, sample, Palette.Current(settings), 96);
                 }

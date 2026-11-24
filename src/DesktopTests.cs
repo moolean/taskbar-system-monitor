@@ -15,7 +15,8 @@ namespace TaskbarSystemMonitor
             int result = 0, step = 0, compactHeight = 0, dismissWrites = 0;
             Rectangle baseline = Native.PrimaryMonitor().Work.Rectangle;
             Rectangle initialBounds = Rectangle.Empty;
-            var settings = new Settings { FirstRun = false };
+            var settings = new Settings { FirstRun = false, GeoEnabled = true }; // Isolated sample; no network worker.
+            settings.Items.Insert(4, "MouseBattery");
             using (var context = new ApplicationContext())
             using (var dock = new DockForm(settings))
             using (var maximized = new Form { Text = "System Monitor — layout test", Size = new Size(500, 300) })
@@ -37,6 +38,7 @@ namespace TaskbarSystemMonitor
                             case 1:
                                 initialBounds = dock.Bounds;
                                 VerifyReservation(dock, baseline, settings.Height);
+                                Require(BarReadiness.Visible(System.Diagnostics.Process.GetCurrentProcess().Id), "Startup check must see the actual dock window");
                                 Require(!Native.IsTopmost(dock.Handle), "Default bar must not be topmost");
                                 report.AppendLine("PASS default non-topmost window style");
                                 report.AppendLine("PASS show / reserve: " + dock.Bounds);
@@ -72,6 +74,7 @@ namespace TaskbarSystemMonitor
                                 dock.Hide(); break;
                             case 4:
                                 Require(!dock.Registered && Native.PrimaryMonitor().Work.Rectangle == baseline, "Hide did not restore work area");
+                                Require(!BarReadiness.Visible(System.Diagnostics.Process.GetCurrentProcess().Id), "A hidden dock must not report ready");
                                 report.AppendLine("PASS hide restores work area");
                                 dock.Show(); break;
                             case 5:
@@ -81,11 +84,14 @@ namespace TaskbarSystemMonitor
                             case 6:
                                 Require(Native.PrimaryMonitor().Work.Rectangle == baseline, "Dispose did not restore work area");
                                 report.AppendLine("PASS exit restores work area");
+                                // Keep this size/focus test on the cursor's monitor;
+                                // cross-monitor DPI transitions are a separate case.
+                                work.Location = Screen.FromPoint(Cursor.Position).WorkingArea.Location;
                                 work.KeepOpen = true; work.Show(); work.OpenItem(1); break;
                             case 7:
                                 Require(work.SelectedIndex == 1 && WorkTests.Find<TextBox>(work, "关键词笔记").Focused, "Direct keyword entry lost its selection or notes focus after Shown");
                                 Require(!Native.IsTopmost(work.Handle), "Work window must not be topmost");
-                                Require(!work.Animating && work.Width == BarRenderer.Scale(420, Native.Dpi(work.Handle)) && work.Height < BarRenderer.Scale(300, Native.Dpi(work.Handle)), "Compact panel size or animation did not settle");
+                                Require(!work.Animating && work.Width == BarRenderer.Scale(420, Native.Dpi(work.Handle)) && work.Height < BarRenderer.Scale(300, Native.Dpi(work.Handle)), "Compact panel size or animation did not settle: bounds=" + work.Bounds + ", dpi=" + Native.Dpi(work.Handle) + ", animating=" + work.Animating);
                                 compactHeight = work.Height;
                                 var deleteButton = WorkTests.Find<UiButton>(work, "删除当前关键词");
                                 Require(deleteButton.Visible && deleteButton.Enabled && work.ClientRectangle.Contains(deleteButton.Bounds) && deleteButton.Width == BarRenderer.Scale(52, Native.Dpi(work.Handle)), "Direct delete action must be visible inside the compact footer");
@@ -99,6 +105,7 @@ namespace TaskbarSystemMonitor
                             case 10:
                                 Require(work.IsDisposed, "Panel did not finish its close transition");
                                 report.AppendLine("PASS compact panel / direct notes focus / animated link, list and close transitions / non-topmost (sample data only)");
+                                transient.Location = Screen.FromPoint(Cursor.Position).WorkingArea.Location;
                                 transient.Show(); transient.OpenItem(0); break;
                             case 11:
                                 WorkTests.Find<TextBox>(transient, "关键词笔记").Text = "Synthetic draft before outside click";
@@ -116,6 +123,11 @@ namespace TaskbarSystemMonitor
                 };
                 timer.Start();
                 Application.Run(context);
+            }
+            if (result == 0)
+            {
+                try { ShellRecoveryTests.Run(report); }
+                catch (Exception error) { result = 20; report.AppendLine("FAIL " + error); }
             }
             report.AppendLine("Final work area: " + Native.PrimaryMonitor().Work.Rectangle);
             File.WriteAllText(reportPath, report.ToString());
@@ -141,7 +153,7 @@ namespace TaskbarSystemMonitor
                     var cells = BarRenderer.Layout(graphics, dock.ClientRectangle, settings, sample, dpi, out hidden);
                     foreach (var cell in cells)
                     {
-                        if (cell.Id != "Codex" && cell.Id != "Ip") continue;
+                        if (!BarRenderer.IsReadOnly(cell.Id)) continue;
                         var point = new Point(cell.Bounds.Left + cell.Bounds.Width / 2, cell.Bounds.Height / 2);
                         move.Invoke(dock, new object[] { new MouseEventArgs(MouseButtons.None, 0, point.X, point.Y, 0) });
                         Require(dock.Cursor == Cursors.Default, "Read-only text still uses a hand cursor");
@@ -172,6 +184,9 @@ namespace TaskbarSystemMonitor
                     click.Invoke(dock, new object[] { new MouseEventArgs(MouseButtons.Middle, 1, dock.Width - 4, 12, 0) });
                     Require(configuration == 1, "Middle-click must not open settings");
                     click.Invoke(dock, new object[] { new MouseEventArgs(MouseButtons.Left, 1, dock.Width - 4, 12, 0) });
+                    Require(configuration == 1, "The final city cell must not open settings");
+                    var menuBounds = BarRenderer.MenuBounds(dock.ClientRectangle, settings, dpi);
+                    click.Invoke(dock, new object[] { new MouseEventArgs(MouseButtons.Left, 1, menuBounds.Left + menuBounds.Width / 2, 12, 0) });
                     Require(configuration == 2, "Left-click ellipsis retains its settings shortcut");
                 }
             }

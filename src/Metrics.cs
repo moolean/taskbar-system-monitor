@@ -19,7 +19,7 @@ namespace TaskbarSystemMonitor
         internal Snapshot FrozenCopy()
         {
             var copy = (Snapshot)MemberwiseClone();
-            copy.Briefing = new BriefingData { Codex = Briefing.Codex, Location = Briefing.Location, WorkSummary = Briefing.WorkSummary, WorkKeywords = new List<string>(Briefing.WorkKeywords) };
+            copy.Briefing = new BriefingData { Codex = Briefing.Codex, Location = Briefing.Location, MouseBattery = Briefing.MouseBattery, WorkSummary = Briefing.WorkSummary, WorkKeywords = new List<string>(Briefing.WorkKeywords) };
             return copy;
         }
         internal string CpuText { get { return Cpu.HasValue ? Cpu.Value.ToString("0", System.Globalization.CultureInfo.InvariantCulture) + "%" : "—"; } }
@@ -35,9 +35,11 @@ namespace TaskbarSystemMonitor
                 case "Download": return Speed(RxKbps);
                 case "Upload": return Speed(TxKbps);
                 case "Battery": return Battery;
+                case "MouseBattery": return Briefing.MouseBattery.Short;
                 case "Clock": return Time.ToString("MM/dd ddd HH:mm", CultureInfo.InvariantCulture);
                 case "Codex": return Briefing.Codex.Short;
-                case "Ip": return string.IsNullOrEmpty(Briefing.Location.Short) ? LocalIp : Briefing.Location.Short;
+                case "Ip": return LocalIp;
+                case "City": return Briefing.Location.Short;
                 case "Tracks": return Briefing.WorkSummary;
                 default: return "—";
             }

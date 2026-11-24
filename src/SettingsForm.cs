@@ -11,13 +11,14 @@ namespace TaskbarSystemMonitor
     internal sealed class SettingsForm : DpiDialog
     {
         private CheckedListBox modules;
-        private ComboBox height, font, theme, accent, align, network, interval;
+        private ComboBox height, font, theme, accent, align, network, interval, mouse;
         private ToggleSwitch dock, topmost, soft, fill, tint, geo;
         private TextBox codexPath;
         private BarPreview preview;
         private WorkWorkspace workWorkspace;
         private Label title, subtitle, status;
-        private UiButton testCodex;
+        private UiButton testCodex, testMouse;
+        private Label mouseStatus;
         private readonly Dictionary<string, Panel> pages = new Dictionary<string, Panel>();
         private readonly Dictionary<string, UiButton> navigation = new Dictionary<string, UiButton>();
         private bool initializing = true;
@@ -41,7 +42,7 @@ namespace TaskbarSystemMonitor
                 item.Click += delegate { SelectPage(id); }; navigation[id]=item;
             }
             SettingsUi.Label(sidebar,"本机优先 · 只读连接",20,632,150,24,8.5f,true);
-            SettingsUi.Label(sidebar,"VERSION 3.7.0",20,658,150,22,8,true);
+            SettingsUi.Label(sidebar,"VERSION " + new Version(Application.ProductVersion).ToString(3),20,658,150,22,8,true);
 
             var main = new Panel { Dock = DockStyle.Fill }; Controls.Add(main); main.BringToFront();
             var header = new Panel { Dock = DockStyle.Top, Height = 104 }; main.Controls.Add(header);
@@ -60,7 +61,7 @@ namespace TaskbarSystemMonitor
                 main.Controls.Add(panel); panel.BringToFront(); pages[id]=panel;
             }
             BuildGeneral(pages["General"]); BuildAppearance(pages["Appearance"]); BuildConnections(pages["Connections"]); BuildWork(pages["Tracks"]);
-            foreach (var box in new[] { dock,topmost,soft,fill,tint }) box.CheckedChanged += delegate { Changed(); };
+            foreach (var box in new[] { dock,topmost,soft,fill,tint,geo }) box.CheckedChanged += delegate { Changed(); };
             foreach (var combo in new[] { height,font,theme,accent,align }) combo.SelectedIndexChanged += delegate { Changed(); };
             modules.ItemCheck += delegate { if (IsHandleCreated) BeginInvoke(new MethodInvoker(delegate { if (!IsDisposed) Changed(); })); };
             initializing=false;
@@ -122,9 +123,17 @@ namespace TaskbarSystemMonitor
             if(Value.NetworkId.Length>0 && !network.Items.Cast<NetworkChoice>().Any(x=>x.Id==Value.NetworkId)) network.Items.Add(new NetworkChoice("已选网卡（当前不可用）",Value.NetworkId));
             network.SelectedIndex=Enumerable.Range(0,network.Items.Count).FirstOrDefault(i=>((NetworkChoice)network.Items[i]).Id==Value.NetworkId);
             interval=SelectRow(ip,"资源采样间隔","CPU、内存、网速的刷新频率。",new[] { "1 秒","2 秒","5 秒" },Value.Interval==2000?1:Value.Interval==5000?2:0,140);
-            geo=Toggle(ip,"查询公网 IP 与大致位置","每 10 分钟向 ipwho.is 发送出口 IP；不是 GPS，可随时关闭。",Value.GeoEnabled,200);
-            SettingsUi.Label(page,"配置存储："+Settings.DefaultPath,28,496,710,52,8.5f,true);
-            page.AutoScrollMinSize=new Size(0,564);
+            geo=Toggle(ip,"在横条最右侧显示出口城市","每分钟连接 ipwho.is，对方可见公网出口 IP。按 IP 估算城市，非 GPS；可随时关闭。",Value.GeoEnabled,200);
+            var mouseCard=Card(page,"罗技鼠标电量","只读本机 G HUB，每 30 秒刷新；不更改 DPI、按键、灯光。",494,228);
+            mouse=SelectRow(mouseCard,"目标鼠标","单只自动识别；多只时选择名称。",new string[0],-1,78);
+            SetMouseChoices(new List<LogitechMouse>(),Value.MouseName);
+            mouse.SelectedIndexChanged+=delegate { if(mouse.Enabled) status.Text="鼠标选择在保存后生效"; };
+            mouseStatus=SettingsUi.Label(mouseCard,"G HUB 需保持后台运行；不依赖 Codex。",20,142,530,42,8.5f,true);
+            testMouse=SettingsUi.Button(mouseCard,"检测电量",578,136,120);
+            testMouse.Click+=delegate { TestMouse(); };
+            SettingsUi.Label(mouseCard,"常规与显示 → 勾选“罗技鼠标电量”。横条 + 表示充电。",20,190,678,24,8.5f,true);
+            SettingsUi.Label(page,"配置存储："+Settings.DefaultPath,28,740,710,52,8.5f,true);
+            page.AutoScrollMinSize=new Size(0,808);
         }
         private void BuildWork(Panel page)
         {
@@ -154,6 +163,7 @@ namespace TaskbarSystemMonitor
         {
             if(initializing)return;
             Value.Dock=dock.Checked; Value.AlwaysOnTop=topmost.Checked; Value.SoftBackground=soft.Checked; Value.FillBar=fill.Checked; Value.TintTaskbar=tint.Checked;
+            Value.GeoEnabled=geo.Checked;
             Value.Height=int.Parse((string)height.SelectedItem); Value.FontSize=int.Parse((string)font.SelectedItem);
             Value.Theme=new[] { "Auto","Light","Dark" }[theme.SelectedIndex]; Value.Accent=new[] { "System","Ocean","Plum","Jade" }[accent.SelectedIndex]; Value.Alignment=new[] { "Left","Center","Right" }[align.SelectedIndex];
             Value.Items=modules.CheckedItems.Cast<ModuleChoice>().Select(x=>x.Id).ToList(); preview.Settings=Value; ApplyTheme(); preview.Invalidate(); status.Text="有未保存的更改";
@@ -165,6 +175,30 @@ namespace TaskbarSystemMonitor
             string path=codexPath.Text.Trim(); testCodex.Enabled=false; status.Text="正在读取 Codex 额度…";
             Task.Run(delegate { string result; try { result=CodexQuota.Read(path).Short; } catch(Exception error) { result=InfoHub.SafeError(error); } Post(delegate { status.Text=result; testCodex.Enabled=true; }); });
         }
+        private void SetMouseChoices(List<LogitechMouse> devices,string selected)
+        {
+            mouse.Items.Clear(); mouse.Items.Add(new MouseChoice(""));
+            foreach(string name in devices.Select(x=>x.Name).Concat(new[] {selected}).Where(x=>x.Length>0).Distinct())
+                mouse.Items.Add(new MouseChoice(name));
+            mouse.SelectedIndex=Enumerable.Range(0,mouse.Items.Count).First(i=>((MouseChoice)mouse.Items[i]).Name==selected);
+        }
+        private void TestMouse()
+        {
+            string selected=((MouseChoice)mouse.SelectedItem).Name;
+            mouse.Enabled=false; testMouse.Enabled=false; mouseStatus.Text="正在读取本机 G HUB…";
+            Task.Run(delegate
+            {
+                var result=LogitechBattery.Read(selected);
+                Post(delegate
+                {
+                    SetMouseChoices(result.Devices,selected);
+                    mouseStatus.Text=result.Reading.Available
+                        ? result.Reading.Details.Split('\r')[0]+" · "+result.Reading.Short+"（+ 表示充电）"
+                        : result.Reading.Details.Split('\r')[0];
+                    mouse.Enabled=true; testMouse.Enabled=true;
+                });
+            });
+        }
         private void Save(object sender,EventArgs e)
         {
             try
@@ -173,6 +207,7 @@ namespace TaskbarSystemMonitor
                 if (!workWorkspace.TryGetItems(out keywords, out workError)) { status.Text = workError; SelectPage("Tracks"); return; }
                 Changed(); if(Value.Items.Count==0)throw new InvalidOperationException("请至少选择一个显示模块。");
                 Value.CodexPath=codexPath.Text.Trim(); Value.GeoEnabled=geo.Checked; Value.NetworkId=((NetworkChoice)network.SelectedItem).Id; Value.Interval=new[] { 1000,2000,5000 }[interval.SelectedIndex]; Value.WorkItems=keywords; Value.Validate();
+                Value.MouseName=((MouseChoice)mouse.SelectedItem).Name; Value.Validate();
                 DialogResult=DialogResult.OK; Close();
             }
             catch(Exception error) { status.Text=InfoHub.SafeError(error); SelectPage("Connections"); }
@@ -190,5 +225,6 @@ namespace TaskbarSystemMonitor
         }
         private sealed class ModuleChoice { internal string Id; public override string ToString() { return Settings.MetricNames[Array.IndexOf(Settings.MetricIds,Id)]; } }
         private sealed class NetworkChoice { internal string Id,Name; internal NetworkChoice(string name,string id) {Name=name;Id=id;} public override string ToString() {return Name;} }
+        private sealed class MouseChoice { internal string Name; internal MouseChoice(string name) {Name=name;} public override string ToString() {return Name.Length==0?"自动识别活动鼠标":Name;} }
     }
 }

@@ -14,11 +14,11 @@ namespace TaskbarSystemMonitor
         internal bool Dock = true, SoftBackground = true, FirstRun = true, FillBar = true, TintTaskbar = true, GeoEnabled = false;
         internal bool AlwaysOnTop = false;
         internal int Height = 24, FontSize = 9, Interval = 1000;
-        internal string Theme = "Auto", Alignment = "Right", NetworkId = "", Accent = "System", CodexPath = "";
+        internal string Theme = "Auto", Alignment = "Right", NetworkId = "", Accent = "System", CodexPath = "", MouseName = "";
         internal List<WorkItem> WorkItems = new List<WorkItem>();
-        internal List<string> Items = new List<string> { "Cpu", "Memory", "Download", "Upload", "Codex", "Ip", "Tracks", "Clock" };
-        internal static readonly string[] MetricIds = { "Cpu", "Memory", "MemoryUsed", "Download", "Upload", "Battery", "Codex", "Ip", "Tracks", "Clock" };
-        internal static readonly string[] MetricNames = { "CPU 使用率", "内存使用率", "已用 / 总内存", "下载速度", "上传速度", "电池电量", "Codex 剩余额度", "IP / 大致位置", "工作追踪（可展开）", "日期与时间" };
+        internal List<string> Items = new List<string> { "Cpu", "Memory", "Download", "Upload", "Codex", "Ip", "Tracks" };
+        internal static readonly string[] MetricIds = { "Cpu", "Memory", "MemoryUsed", "Download", "Upload", "Battery", "MouseBattery", "Codex", "Ip", "Tracks", "Clock" };
+        internal static readonly string[] MetricNames = { "CPU 使用率", "内存使用率", "已用 / 总内存", "下载速度", "上传速度", "电脑电池电量", "罗技鼠标电量", "Codex 剩余额度", "本地 IP", "工作追踪（可展开）", "日期与时间" };
         internal Settings Copy() { var s = (Settings)MemberwiseClone(); s.Items = new List<string>(Items); s.WorkItems = WorkItems.Select(x => x.Copy()).ToList(); return s; }
         internal void Validate()
         {
@@ -32,8 +32,39 @@ namespace TaskbarSystemMonitor
             if (Items.Count == 0) Items.Add("Cpu");
             WorkItems = WorkItems.Where(x => !string.IsNullOrWhiteSpace(x.Keyword)).Take(30).ToList();
             foreach (var item in WorkItems) item.Validate();
+            MouseName = (MouseName ?? "").Trim();
+            if (MouseName.Length > 120 || MouseName.Any(char.IsControl)) MouseName = "";
         }
         internal static string DefaultPath { get { return AppPaths.SettingsPath; } }
+        internal static bool EnableExitCity(string path)
+        {
+            if (!File.Exists(path)) { new Settings { GeoEnabled = true }.Save(path); return true; }
+            var root = XElement.Load(path, LoadOptions.PreserveWhitespace);
+            if (root.Name != "settings") throw new InvalidDataException("Invalid settings file.");
+            if ((bool?)root.Attribute("geoEnabled") == true) return false;
+            root.SetAttributeValue("geoEnabled", true);
+            string staged = path + ".city-" + Guid.NewGuid().ToString("N");
+            try { root.Save(staged, SaveOptions.DisableFormatting); File.Replace(staged, path, null); }
+            finally { if (File.Exists(staged)) File.Delete(staged); }
+            return true;
+        }
+        internal static bool EnableMouseBattery(string path)
+        {
+            if (!File.Exists(path))
+            {
+                var settings = new Settings(); settings.Items.Insert(4, "MouseBattery"); settings.Save(path); return true;
+            }
+            var root = XElement.Load(path);
+            if (root.Name != "settings") throw new InvalidDataException("Invalid settings file.");
+            if (root.Elements("item").Any(x => (string)x == "MouseBattery")) return false;
+            var anchor = root.Elements("item").FirstOrDefault(x => (string)x == "Codex" || (string)x == "Tracks");
+            if (anchor != null) anchor.AddBeforeSelf(new XElement("item", "MouseBattery"));
+            else root.Add(new XElement("item", "MouseBattery"));
+            string staged = path + ".mouse-" + Guid.NewGuid().ToString("N");
+            try { root.Save(staged); File.Replace(staged, path, null); }
+            finally { if (File.Exists(staged)) File.Delete(staged); }
+            return true;
+        }
         internal static bool MigrateWorkKeywords(string path)
         {
             if (!File.Exists(path)) return false;
@@ -87,11 +118,12 @@ namespace TaskbarSystemMonitor
                 s.GeoEnabled = (bool?)root.Attribute("geoEnabled") ?? false;
                 s.Accent = (string)root.Attribute("accent") ?? "System";
                 s.CodexPath = (string)root.Element("codexPath") ?? "";
+                s.MouseName = (string)root.Element("mouseName") ?? "";
                 var work = root.Element("workItems");
                 if (work != null) s.WorkItems = work.Elements("work").Select(WorkItem.Load).ToList();
                 s.Items = root.Elements("item").Select(x => (string)x).ToList();
                 if (((int?)root.Attribute("version") ?? 2) < 3)
-                    foreach (string id in new[] { "Codex", "Ip", "Tracks", "Clock" }) if (!s.Items.Contains(id)) s.Items.Add(id);
+                    foreach (string id in new[] { "Codex", "Ip", "Tracks" }) if (!s.Items.Contains(id)) s.Items.Add(id);
                 s.Validate();
             }
             catch (Exception error) { Log.Error(error); return new Settings(); }
@@ -105,7 +137,7 @@ namespace TaskbarSystemMonitor
                 new XAttribute("height", Height), new XAttribute("fontSize", FontSize), new XAttribute("interval", Interval),
                 new XAttribute("theme", Theme), new XAttribute("alignment", Alignment), new XAttribute("network", NetworkId),
                 new XAttribute("fillBar", FillBar), new XAttribute("tintTaskbar", TintTaskbar), new XAttribute("geoEnabled", GeoEnabled), new XAttribute("accent", Accent),
-                Items.Select(x => new XElement("item", x)), new XElement("codexPath", CodexPath),
+                Items.Select(x => new XElement("item", x)), new XElement("codexPath", CodexPath), new XElement("mouseName", MouseName),
                 new XElement("workItems", WorkItems.Select(x => x.Save())));
             string temp = path + ".tmp";
             root.Save(temp);
@@ -132,11 +164,11 @@ namespace TaskbarSystemMonitor
             bool colorOnTaskbar = false;
             if (settings.Theme == "Auto" && settings.TintTaskbar)
                 try { using (var key = Registry.CurrentUser.OpenSubKey(@"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize")) colorOnTaskbar = key != null && Convert.ToInt32(key.GetValue("ColorPrevalence", 0)) != 0; } catch { }
-            double strength = settings.TintTaskbar ? (colorOnTaskbar ? 0.26 : 0.08) : 0;
-            p.Background = Blend(light ? Color.FromArgb(237, 240, 243) : Color.FromArgb(29, 32, 38), accent, strength);
-            p.Surface = Blend(p.Background, light ? Color.White : Color.FromArgb(45, 48, 54), 0.25);
-            p.Border = Blend(p.Background, accent, 0.3);
-            p.Cpu = Blend(accent, light ? Color.Black : Color.White, light ? 0.20 : 0.4);
+            double strength = settings.TintTaskbar ? (colorOnTaskbar ? 0.18 : 0.055) : 0;
+            p.Background = Blend(light ? Color.FromArgb(243, 245, 248) : Color.FromArgb(28, 31, 37), accent, strength);
+            p.Surface = Blend(p.Background, light ? Color.White : Color.FromArgb(45, 48, 54), 0.22);
+            p.Border = Blend(p.Background, p.Muted, light ? 0.22 : 0.24);
+            p.Cpu = Blend(p.Text, accent, light ? 0.40 : 0.33);
             return p;
         }
         internal static Color Blend(Color a, Color b, double amount) { return Color.FromArgb((int)(a.R * (1 - amount) + b.R * amount), (int)(a.G * (1 - amount) + b.G * amount), (int)(a.B * (1 - amount) + b.B * amount)); }

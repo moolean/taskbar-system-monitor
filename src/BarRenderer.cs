@@ -10,7 +10,7 @@ namespace TaskbarSystemMonitor
     {
         internal Rectangle Bounds;
         internal string Id, Label, Value;
-        internal int LabelWidth, Weight;
+        internal int LabelWidth;
     }
 
     internal sealed class WorkTarget
@@ -30,9 +30,9 @@ namespace TaskbarSystemMonitor
             bool light = colors.Background.GetBrightness() > .5f;
             Color tint = light ? Color.FromArgb(205, 194, 227) : Color.FromArgb(105, 86, 145);
             return new WorkColors {
-                Fill = Palette.Blend(colors.Background, tint, light ? .48 : .30),
+                Fill = Palette.Blend(colors.Background, tint, light ? .32 : .23),
                 Hover = Palette.Blend(colors.Background, tint, light ? .76 : .55),
-                Border = Palette.Blend(colors.Background, tint, light ? .70 : .52),
+                Border = Palette.Blend(colors.Background, tint, light ? .48 : .42),
                 Text = light ? Color.FromArgb(68, 53, 92) : Color.FromArgb(230, 221, 247),
                 Accent = light ? Color.FromArgb(110, 86, 149) : Color.FromArgb(187, 166, 221)
             };
@@ -42,22 +42,33 @@ namespace TaskbarSystemMonitor
     internal static class BarRenderer
     {
         private const int CellPadding = 5, LabelGap = 4, KeywordGap = 3, KeywordPadding = 10;
-        internal static bool IsReadOnly(string id) { return id == "Codex" || id == "Ip"; }
+        internal static bool IsReadOnly(string id) { return id == "Codex" || id == "Ip" || id == "MouseBattery" || id == "City"; }
+        internal static Rectangle CityBounds(Rectangle bounds, Settings settings, int dpi)
+        {
+            if (!settings.GeoEnabled) return Rectangle.Empty;
+            int width = Math.Min(Scale(112 + (settings.FontSize - 9) * 7, dpi), bounds.Width / 3);
+            return width < Scale(48, dpi) ? Rectangle.Empty : Rectangle.FromLTRB(bounds.Right - width, bounds.Top, bounds.Right, bounds.Bottom);
+        }
+        internal static Rectangle MenuBounds(Rectangle bounds, Settings settings, int dpi)
+        {
+            int right = bounds.Right - CityBounds(bounds, settings, dpi).Width;
+            return Rectangle.FromLTRB(Math.Max(bounds.Left, right - Scale(28, dpi)), bounds.Top, right, bounds.Bottom);
+        }
         internal static Font FontFor(Settings settings, int dpi) { return new Font("Segoe UI", settings.FontSize * dpi / 72f, FontStyle.Regular, GraphicsUnit.Pixel); }
         internal static int Scale(int value, int dpi) { return Math.Max(1, (int)Math.Round(value * dpi / 96.0)); }
         internal static string Label(string id)
         {
-            switch (id) { case "Cpu": return "CPU"; case "Memory": return "RAM"; case "MemoryUsed": return "MEM"; case "Download": return "↓"; case "Upload": return "↑"; case "Battery": return "BAT"; case "Clock": return ""; case "Codex": return "CODEX"; case "Ip": return "IP"; case "Tracks": return "WORK"; default: return id; }
+            switch (id) { case "Cpu": return "CPU"; case "Memory": return "RAM"; case "MemoryUsed": return "MEM"; case "Download": return "↓"; case "Upload": return "↑"; case "Battery": return "BAT"; case "MouseBattery": return "MOUSE"; case "Clock": return ""; case "Codex": return "CODEX"; case "Ip": return "IP"; case "Tracks": return "WORK"; default: return id; }
         }
         private static string Reserve(string id)
         {
-            switch (id) { case "Cpu": case "Memory": return "100%"; case "MemoryUsed": return "99.9 / 999.9 GiB"; case "Upload": case "Download": return "999.9 MiB/s"; case "Battery": return "AC 100%"; case "Clock": return "09/14 Wed 23:59"; default: return "—"; }
+            switch (id) { case "Cpu": case "Memory": return "100%"; case "MouseBattery": return "100%+"; case "MemoryUsed": return "99.9 / 999.9 GiB"; case "Upload": case "Download": return "999.9 MiB/s"; case "Battery": return "AC 100%"; case "Clock": return "09/14 Wed 23:59"; default: return "—"; }
         }
         internal static List<MetricCell> Layout(Graphics graphics, Rectangle bounds, Settings settings, Snapshot snapshot, int dpi, out int hidden)
         {
             var cells = new List<MetricCell>();
-            int padding = Scale(CellPadding, dpi), gap = Scale(LabelGap, dpi), button = Scale(28, dpi);
-            int available = Math.Max(0, bounds.Width - button - padding * 2), total = 0;
+            int padding = Scale(CellPadding, dpi), gap = Scale(LabelGap, dpi);
+            int available = Math.Max(0, MenuBounds(bounds, settings, dpi).Left - bounds.Left - padding * 2), total = 0;
             int workPreferred = 0;
             hidden = 0;
             using (Font font = FontFor(settings, dpi))
@@ -66,7 +77,6 @@ namespace TaskbarSystemMonitor
                 {
                     string value = snapshot == null ? "—" : snapshot.Value(id);
                     int labelWidth = Measure(graphics, Label(id), font);
-                    int weight = id == "Tracks" ? 3 : id == "Codex" || id == "Ip" ? 1 : 0;
                     int width;
                     if (id == "Tracks")
                     {
@@ -84,7 +94,7 @@ namespace TaskbarSystemMonitor
                         if (id == "Codex" || id == "Ip") width = Math.Min(width, Scale(id == "Codex" ? 240 : 220, dpi));
                     }
                     if (total + width > available) { hidden++; continue; }
-                    cells.Add(new MetricCell { Bounds = new Rectangle(0, bounds.Top, width, bounds.Height), Id = id, Label = Label(id), Value = value, LabelWidth = labelWidth, Weight = weight });
+                    cells.Add(new MetricCell { Bounds = new Rectangle(0, bounds.Top, width, bounds.Height), Id = id, Label = Label(id), Value = value, LabelWidth = labelWidth });
                     total += width;
                 }
             }
@@ -99,7 +109,27 @@ namespace TaskbarSystemMonitor
             if (settings.Alignment == "Right") start += available - total;
             if (settings.Alignment == "Center") start += (available - total) / 2;
             foreach (MetricCell cell in cells) { cell.Bounds = new Rectangle(start, bounds.Top, cell.Bounds.Width, bounds.Height); start += cell.Bounds.Width; }
+            var city = CityBounds(bounds, settings, dpi);
+            if (!city.IsEmpty)
+                using (Font font = FontFor(settings, dpi))
+                    cells.Add(new MetricCell { Id = "City", Label = "CITY", LabelWidth = Measure(graphics, "CITY", font), Value = snapshot == null ? "Locating…" : snapshot.Value("City"), Bounds = city });
             return cells;
+        }
+        internal static Rectangle ContentBounds(Graphics graphics, MetricCell cell, Font font, int dpi)
+        {
+            int pad = Scale(CellPadding, dpi);
+            int available = Math.Max(0, cell.Bounds.Width - pad * 2);
+            int width = available;
+            if (cell.Id != "Tracks")
+            {
+                // Reserve the cell width for changing numbers, not the gap
+                // between the label and value. Center the actual text as one
+                // compact group so unused space is balanced on both sides.
+                int textWidth = cell.LabelWidth + (cell.LabelWidth > 0 ? Scale(LabelGap, dpi) : 0) + Measure(graphics, cell.Value, font);
+                width = Math.Min(available, textWidth);
+            }
+            return new Rectangle(cell.Bounds.Left + pad + (available - width) / 2,
+                cell.Bounds.Top + 1, width, Math.Max(0, cell.Bounds.Height - 2));
         }
         internal static void Draw(Graphics graphics, Rectangle bounds, Settings settings, Snapshot snapshot, Palette colors, int dpi, string hovered = null, int hoveredWork = int.MinValue, int draggedWork = -1, int workDropSlot = -1)
         {
@@ -119,8 +149,9 @@ namespace TaskbarSystemMonitor
             using (Font font = FontFor(settings, dpi))
             {
                 var workColors = WorkColors.From(colors);
-                foreach (MetricCell cell in cells)
+                for (int i = 0; i < cells.Count; i++)
                 {
+                    MetricCell cell = cells[i];
                     var workTargets = cell.Id == "Tracks" ? WorkTargets(graphics, cell, snapshot, settings, dpi) : null;
                     if (!IsReadOnly(cell.Id) && cell.Id != "Tracks" && cell.Id == hovered)
                     {
@@ -131,11 +162,12 @@ namespace TaskbarSystemMonitor
                         using (var fill = new SolidBrush(Palette.Blend(colors.Background, colors.Cpu, cell.Id == hovered ? 0.15 : 0.045)))
                         using (var path = Rounded(chip, Scale(4, dpi))) graphics.FillPath(fill, path);
                     }
-                    Rectangle label = new Rectangle(cell.Bounds.Left + pad, bounds.Top + 1, cell.LabelWidth, bounds.Height - 2);
-                    Color accent = cell.Id == "Tracks" ? workColors.Accent : cell.Id == "Cpu" ? colors.Cpu : cell.Id == "Memory" || cell.Id == "MemoryUsed" ? colors.Memory : colors.Muted;
+                    Rectangle content = ContentBounds(graphics, cell, font, dpi);
+                    Rectangle label = new Rectangle(content.Left, content.Top, cell.LabelWidth, content.Height);
+                    Color accent = cell.Id == "Tracks" ? workColors.Accent : cell.Id == "City" ? colors.Cpu : colors.Muted;
                     DrawText(graphics, cell.Label, font, label, accent, StringAlignment.Near);
                     int valueLeft = label.Right + (cell.LabelWidth > 0 ? gap : 0);
-                    Rectangle value = new Rectangle(valueLeft, label.Top, cell.Bounds.Right - pad - valueLeft, label.Height);
+                    Rectangle value = new Rectangle(valueLeft, label.Top, Math.Max(0, content.Right - valueLeft), label.Height);
                     if (cell.Id == "Tracks")
                     {
                         foreach (var target in workTargets)
@@ -159,14 +191,18 @@ namespace TaskbarSystemMonitor
                             if (x >= 0) using (var pen = new Pen(workColors.Accent, Scale(2, dpi))) graphics.DrawLine(pen, x, cell.Bounds.Top + Scale(3, dpi), x, cell.Bounds.Bottom - Scale(3, dpi));
                         }
                     }
-                    else DrawText(graphics, cell.Value, font, value, colors.Text, cell.Weight > 0 ? StringAlignment.Near : StringAlignment.Far);
-                    if (cell != cells[cells.Count - 1])
+                    else DrawText(graphics, cell.Value, font, value, colors.Text, StringAlignment.Near);
+                    if (i + 1 < cells.Count && Group(cell.Id) != Group(cells[i + 1].Id))
                         using (var pen = new Pen(colors.Border)) graphics.DrawLine(pen, cell.Bounds.Right, bounds.Top + bounds.Height / 3, cell.Bounds.Right, bounds.Bottom - bounds.Height / 3);
                 }
                 // This remains visible even if every metric is too wide for the screen.
-                Rectangle menu = new Rectangle(bounds.Right - Scale(28, dpi), bounds.Top + 1, Scale(24, dpi), bounds.Height - 2);
+                Rectangle menu = MenuBounds(bounds, settings, dpi);
                 DrawText(graphics, hidden > 0 ? "+" + hidden : "···", font, menu, colors.Muted, StringAlignment.Center);
             }
+        }
+        private static string Group(string id)
+        {
+            switch (id) { case "Cpu": case "Memory": case "MemoryUsed": return "system"; case "Upload": case "Download": return "traffic"; case "MouseBattery": case "Battery": return "power"; default: return id; }
         }
         internal static int WorkDropSlot(List<WorkTarget> targets, Rectangle cellBounds, Point point, int dpi)
         {

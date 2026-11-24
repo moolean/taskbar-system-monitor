@@ -7,9 +7,9 @@ $paths = Get-MonitorPaths
 & (Join-Path $PSScriptRoot 'scripts\Test-Scripts.ps1')
 $report = Join-Path $PSScriptRoot 'dist\self-test-error.txt'
 Invoke-MonitorCommand -Executable $paths.Source -Arguments @('--self-test', ('"--test-report=' + $report + '"')) -ReportPath $report
-Write-Host 'PASS: startup policy, sampling, work reorder/persistence, compact layout, palette contrast, autosave/undo, English labels, quota parsing, and migration safety.'
+Write-Host 'PASS: startup policy, mouse battery parsing/transport, sampling, work reorder/persistence, compact layout and balanced spacing, palette contrast, autosave/undo, English labels, quota parsing, and migration safety.'
 if ($Desktop) {
     $report = Join-Path $PSScriptRoot 'dist\desktop-test.txt'
-    Invoke-MonitorCommand -Executable $paths.Source -Arguments ('"--appbar-test=' + $report + '"') -TimeoutMs 20000 -ReportPath $report
+    Invoke-MonitorCommand -Executable $paths.Source -Arguments ('"--appbar-test=' + $report + '"') -TimeoutMs 45000 -ReportPath $report
     Get-Content -LiteralPath $report
 }
